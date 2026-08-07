@@ -48,6 +48,25 @@ class MAT_PT_PaintSystem2DView(Panel):
         if ip.use_stencil_layer:
             col.prop(ip, "invert_stencil", text="Invert Stencil (Fix)")
 
+        # PSD 왕복 연동
+        from ..operators.psd_operators import KEY_PSD_PATH, is_sync_running
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="Photoshop (PSD)", icon='FILE_IMAGE')
+        row = col.row(align=True)
+        row.operator("paint_system.export_psd", text="Export")
+        row.operator("paint_system.import_psd", text="Import")
+        psd_path = context.scene.get(KEY_PSD_PATH)
+        if psd_path:
+            import os
+            col.label(text=os.path.basename(psd_path))
+            col.operator(
+                "paint_system.toggle_psd_sync",
+                text="Stop Live Sync" if is_sync_running() else "Start Live Sync",
+                icon='PAUSE' if is_sync_running() else 'PLAY',
+                depress=is_sync_running(),
+            )
+
 
 classes = (
     MAT_PT_PaintSystem2DView,
