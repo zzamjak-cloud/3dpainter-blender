@@ -9,6 +9,8 @@ submodules = [
     "extras_panels",
     "layers_panels",
     "quick_tools_panels",
+    # 3DPainter 포크 추가 모듈
+    "view2d_panels",
 ]
 
 register, unregister = register_submodule_factory(__name__, submodules)

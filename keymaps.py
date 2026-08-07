@@ -71,6 +71,15 @@ def register() -> None:
                 alt=True,
             )
 
+        # 3DPainter 포크: 2D/3D 뷰 클릭 시 페인팅 대상 자동 전환 (이벤트 통과)
+        _add_keymap_entry(
+            kc,
+            name=km_name,
+            space_type=space,
+            idname='paint_system.canvas_switch',
+            key='LEFTMOUSE',
+        )
+
         # 3DPainter 포크: Shift+클릭 직선 + 앵커 기록(일반 클릭 통과)
         if ENABLE_SHIFT_CLICK_LINE:
             _add_keymap_entry(
