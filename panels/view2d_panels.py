@@ -67,6 +67,13 @@ class MAT_PT_PaintSystem2DView(Panel):
                 depress=is_sync_running(),
             )
 
+        # 웹앱 자산 이전
+        layout.operator(
+            "paint_system.import_paint3d",
+            text="Import .paint3d (Web App)",
+            icon='IMPORT',
+        )
+
 
 classes = (
     MAT_PT_PaintSystem2DView,

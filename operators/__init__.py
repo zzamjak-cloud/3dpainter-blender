@@ -17,6 +17,7 @@ submodules = [
     "view2d_operators",
     "lasso_operators",
     "psd_operators",
+    "paint3d_operators",
 ]
 
 register, unregister = register_submodule_factory(__name__, submodules)
