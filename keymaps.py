@@ -6,6 +6,9 @@ addon_keymaps = []
 
 # Toggleable shortcuts
 ENABLE_SHIFT_RMB_IN_TEXPAINT = True
+# 3DPainter 포크: 포토샵식 단축키
+ENABLE_ALT_CLICK_EYEDROPPER = True
+ENABLE_SHIFT_CLICK_LINE = True
 
 
 def _add_keymap_entry(
@@ -55,6 +58,35 @@ def register() -> None:
                 value='PRESS',
                 properties={'name': 'MAT_PT_TexPaintRMBMenu'},
                 shift=True,
+            )
+
+        # 3DPainter 포크: Alt+클릭 스포이드 (포토샵식 — 합성 결과에서 색 추출)
+        if ENABLE_ALT_CLICK_EYEDROPPER:
+            _add_keymap_entry(
+                kc,
+                name=km_name,
+                space_type=space,
+                idname='paint_system.color_sample',
+                key='LEFTMOUSE',
+                alt=True,
+            )
+
+        # 3DPainter 포크: Shift+클릭 직선 + 앵커 기록(일반 클릭 통과)
+        if ENABLE_SHIFT_CLICK_LINE:
+            _add_keymap_entry(
+                kc,
+                name=km_name,
+                space_type=space,
+                idname='paint_system.line_stroke',
+                key='LEFTMOUSE',
+                shift=True,
+            )
+            _add_keymap_entry(
+                kc,
+                name=km_name,
+                space_type=space,
+                idname='paint_system.record_stroke_anchor',
+                key='LEFTMOUSE',
             )
 
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
