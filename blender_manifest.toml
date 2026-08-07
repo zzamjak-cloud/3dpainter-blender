@@ -2,11 +2,11 @@ schema_version = "1.0.0"
 
 # Example of manifest file for a Blender extension
 # Change the values according to your extension
-id = "paint_system"
+id = "painter3d"
 version = "2.1.17"
-name = "Paint System"
-tagline = "Addon for adding painting system to blender"
-maintainer = "Tawan Sunflower"
+name = "3DPainter"
+tagline = "Layer-based hand-painting for Blender, forked from Paint System"
+maintainer = "jinpyoung"
 # Supported types: "add-on", "theme"
 type = "add-on"
 
@@ -29,6 +29,7 @@ license = [
 ]
 # Optional: required by some licenses.
 copyright = [
+  "2026 jinpyoung (3DPainter fork)",
   "2024-2025 Tawan Sunflower",
   "2005-2025 Blender Authors (project edit/apply operators adapted from Blender's bl_operators/image.py)",
 ]

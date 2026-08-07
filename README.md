@@ -1,3 +1,12 @@
+# 3DPainter (Paint System 포크)
+
+> 이 저장소는 [Paint System](https://github.com/natapol2547/paintsystem) (Tawan Sunflower, GPL-3.0-or-later)의 포크입니다.
+> 손맵 중심 Diffuse 페인팅 워크플로를 위해 다음 기능을 추가·확장합니다:
+> Alt+클릭 스포이드, 원클릭 드로잉 레이어, Shift+클릭 직선, 라쏘 선택, Flat UV Mesh 기반 2D 텍스처 뷰.
+> 라이선스는 원본과 동일하게 GPL-3.0-or-later를 유지합니다.
+
+---
+
 # Paint System Addon
 **Paint System** is a layer based add-on that resembles your typical drawing process. The Idea is that it simplifies the user’s experience by consolidating the main settings and tools into one place.
 
