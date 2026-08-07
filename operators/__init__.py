@@ -15,6 +15,7 @@ submodules = [
     # 3DPainter 포크 추가 모듈
     "line_operators",
     "view2d_operators",
+    "lasso_operators",
 ]
 
 register, unregister = register_submodule_factory(__name__, submodules)

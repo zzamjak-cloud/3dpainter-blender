@@ -35,6 +35,19 @@ class MAT_PT_PaintSystem2DView(Panel):
                 icon='FILE_REFRESH',
             )
 
+        # 선택 영역 (라쏘 → 스텐실 마스크)
+        ip = context.tool_settings.image_paint
+        box = layout.box()
+        col = box.column(align=True)
+        col.label(text="Selection", icon='SELECT_SET')
+        if is_open:
+            col.label(text="Ctrl+Shift+Drag: Lasso (2D View)")
+        row = col.row(align=True)
+        row.operator("paint_system.invert_selection", text="Invert")
+        row.operator("paint_system.clear_selection", text="Clear")
+        if ip.use_stencil_layer:
+            col.prop(ip, "invert_stencil", text="Invert Stencil (Fix)")
+
 
 classes = (
     MAT_PT_PaintSystem2DView,

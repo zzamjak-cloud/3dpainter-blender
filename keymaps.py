@@ -98,6 +98,17 @@ def register() -> None:
                 key='LEFTMOUSE',
             )
 
+        # 3DPainter 포크: Ctrl+Shift+LMB 라쏘 선택 (2D 뷰 전용, poll로 제한)
+        _add_keymap_entry(
+            kc,
+            name=km_name,
+            space_type=space,
+            idname='paint_system.lasso_select',
+            key='LEFTMOUSE',
+            ctrl=True,
+            shift=True,
+        )
+
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(
             kc,
