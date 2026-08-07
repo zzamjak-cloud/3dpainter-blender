@@ -23,11 +23,15 @@ def _get_anchor(region) -> tuple[float, float] | None:
 
 def _brush_step_px(context) -> tuple[float, float]:
     """(브러시 반경 px, 스탬프 간격 px)을 반환한다."""
-    tool_settings = context.tool_settings
-    ip = tool_settings.image_paint
+    ip = context.tool_settings.image_paint
     brush = ip.brush
-    ups = tool_settings.unified_paint_settings
-    size = ups.size if getattr(ups, 'use_unified_size', False) else brush.size
+    # 5.x에서 unified_paint_settings가 ToolSettings → Paint로 이동해 양쪽을 가드
+    ups = getattr(context.tool_settings, 'unified_paint_settings', None)
+    if ups is None:
+        ups = getattr(ip, 'unified_paint_settings', None)
+    size = brush.size
+    if ups is not None and getattr(ups, 'use_unified_size', False):
+        size = ups.size
     spacing = max(getattr(brush, 'spacing', 10), 1)
     return float(size), max(1.0, float(size) * spacing / 100.0)
 
