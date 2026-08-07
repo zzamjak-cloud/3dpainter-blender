@@ -76,6 +76,13 @@ class PAINTSYSTEM_OT_NewImage(PSContextMixin, PSImageCreateMixin, MultiMaterialO
         default='*.jpg;*.jpeg;*.png;*.tif;*.tiff;*.bmp',
         options={'HIDDEN'}
     )
+    # 3DPainter 포크: 다이얼로그 없이 기본값으로 즉시 생성 (원클릭 드로잉 레이어)
+    skip_dialog: BoolProperty(
+        name="Skip Dialog",
+        description="Create the layer immediately with default settings",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
             
     def get_next_image_name(self, context):
         """Get the next image name from the active channel"""
@@ -126,6 +133,9 @@ class PAINTSYSTEM_OT_NewImage(PSContextMixin, PSImageCreateMixin, MultiMaterialO
             return {'RUNNING_MODAL'}
         if self.image_add_type == 'EXISTING':
             self.image_name = ""
+        # 3DPainter 포크: 원클릭 생성 경로 — invoke에서 이름/해상도가 이미 채워져 있음
+        if self.image_add_type == 'NEW' and self.skip_dialog:
+            return self.execute(context)
         return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):

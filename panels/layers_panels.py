@@ -791,7 +791,11 @@ class MAT_MT_AddImageLayerMenu(Menu):
     
     def draw(self, context):
         layout = self.layout
-        layout.operator("paint_system.new_image_layer", text="New Image Layer", icon_value=get_icon('image')).image_add_type = 'NEW'
+        # 3DPainter 포크: 기본 항목은 원클릭 생성, 커스텀 설정은 별도 항목으로 분리
+        op = layout.operator("paint_system.new_image_layer", text="New Image Layer", icon_value=get_icon('image'))
+        op.image_add_type = 'NEW'
+        op.skip_dialog = True
+        layout.operator("paint_system.new_image_layer", text="New Image Layer (Custom...)").image_add_type = 'NEW'
         layout.operator("paint_system.new_image_layer", text="Import Image Layer").image_add_type = 'IMPORT'
         layout.operator("paint_system.new_image_layer", text="Use Existing Image Layer").image_add_type = 'EXISTING'
 
