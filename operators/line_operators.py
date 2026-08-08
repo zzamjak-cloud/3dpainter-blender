@@ -87,9 +87,15 @@ class PAINTSYSTEM_OT_LineStroke(Operator):
             ]
 
         size, _ = _brush_step_px(context)
+        # 버전에 따라 스트로크 요소 필드가 달라서(예: 5.x에서 pen_flip 제거)
+        # 실제 RNA에 존재하는 키만 보낸다
+        allowed = {
+            p.identifier
+            for p in bpy.types.OperatorStrokeElement.bl_rna.properties
+        } - {'rna_type'}
         stroke = []
         for i, (x, y) in enumerate(points):
-            stroke.append({
+            element = {
                 "name": "",
                 "location": (0.0, 0.0, 0.0),
                 "mouse": (x, y),
@@ -101,7 +107,8 @@ class PAINTSYSTEM_OT_LineStroke(Operator):
                 "is_start": i == 0,
                 "x_tilt": 0.0,
                 "y_tilt": 0.0,
-            })
+            }
+            stroke.append({k: v for k, v in element.items() if k in allowed})
         try:
             bpy.ops.paint.image_paint(stroke=stroke, mode='NORMAL')
         except RuntimeError:
