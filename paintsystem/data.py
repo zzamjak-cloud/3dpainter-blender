@@ -1309,25 +1309,48 @@ class Layer(BaseNestedListItem):
     )
     
     # Projection properties
+    def update_projection_values(self, context):
+        """투영 프로퍼티는 그래프 구조를 바꾸지 않고 proj_node 소켓 값만 바꾼다.
+
+        전체 재컴파일 대신 소켓에 직접 기록해 드래그 중 매 샘플마다 발생하던
+        노드 그래프 재빌드를 없앤다. 대상 노드를 찾지 못하면 기존 경로로 폴백한다.
+        """
+        if not self.auto_update_node_tree:
+            return
+        proj_node = None if self.is_linked else self.find_node("proj_node")
+        if proj_node and self.coord_type == "PROJECT":
+            # basic_layers.create_coord_graph 의 proj_node 기본값과 동일한 소켓·변환
+            values = {
+                "Vector": self.projection_position,
+                "Rotation": self.projection_rotation,
+                "FOV": self.projection_fov,
+                "Object Space": self.projection_space == "OBJECT",
+            }
+            if all(name in proj_node.inputs for name in values):
+                for socket_name, value in values.items():
+                    proj_node.inputs[socket_name].default_value = value
+                return
+        self.update_node_tree(context)
+
     projection_position: FloatVectorProperty(
         name="Projection Position",
         description="Projection position",
         default=(0, 0, 0),
-        update=update_node_tree,
+        update=update_projection_values,
         subtype='TRANSLATION'
     )
     projection_rotation: FloatVectorProperty(
         name="Projection Rotation",
         description="Projection rotation",
         default=(0, 0, 0),
-        update=update_node_tree,
+        update=update_projection_values,
         subtype='EULER'
     )
     projection_fov: FloatProperty(
         name="Projection FOV",
         description="Projection FOV",
         default=40/180*math.pi,
-        update=update_node_tree,
+        update=update_projection_values,
         subtype='ANGLE'
     )
     projection_space: EnumProperty(
@@ -1338,7 +1361,7 @@ class Layer(BaseNestedListItem):
         name="Projection Mode",
         description="Projection mode",
         default="WORLD",
-        update=update_node_tree
+        update=update_projection_values
     )
     
     # Layer masks
