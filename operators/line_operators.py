@@ -181,10 +181,39 @@ class PAINTSYSTEM_OT_EyedropperCursor(Operator):
         return {'PASS_THROUGH'}
 
 
+class PAINTSYSTEM_OT_SetBrushStrength(Operator):
+    """브러시 강도를 지정 값으로 설정한다 (포토샵식 숫자키 제어)"""
+    bl_idname = "paint_system.set_brush_strength"
+    bl_label = "Set Brush Strength"
+    bl_options = {'REGISTER'}
+
+    value: bpy.props.FloatProperty(min=0.0, max=1.0, default=1.0)
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'PAINT_TEXTURE'
+            and context.tool_settings.image_paint.brush is not None
+        )
+
+    def execute(self, context):
+        ip = context.tool_settings.image_paint
+        ups = getattr(context.tool_settings, 'unified_paint_settings', None)
+        if ups is None:
+            ups = getattr(ip, 'unified_paint_settings', None)
+        if ups is not None and getattr(ups, 'use_unified_strength', False):
+            ups.strength = self.value
+        else:
+            ip.brush.strength = self.value
+        self.report({'INFO'}, f"브러시 강도: {round(self.value * 100)}%")
+        return {'FINISHED'}
+
+
 classes = (
     PAINTSYSTEM_OT_RecordStrokeAnchor,
     PAINTSYSTEM_OT_LineStroke,
     PAINTSYSTEM_OT_EyedropperCursor,
+    PAINTSYSTEM_OT_SetBrushStrength,
 )
 
 register, unregister = bpy.utils.register_classes_factory(classes)

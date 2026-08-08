@@ -168,6 +168,25 @@ def register() -> None:
                     **_mods,
                 )
 
+        # 3DPainter 포크: 숫자키 = 브러시 강도 (1=10% … 9=90%, 0=100%)
+        _digit_keys = (
+            ('ONE', 'NUMPAD_1', 0.1), ('TWO', 'NUMPAD_2', 0.2),
+            ('THREE', 'NUMPAD_3', 0.3), ('FOUR', 'NUMPAD_4', 0.4),
+            ('FIVE', 'NUMPAD_5', 0.5), ('SIX', 'NUMPAD_6', 0.6),
+            ('SEVEN', 'NUMPAD_7', 0.7), ('EIGHT', 'NUMPAD_8', 0.8),
+            ('NINE', 'NUMPAD_9', 0.9), ('ZERO', 'NUMPAD_0', 1.0),
+        )
+        for _key, _numpad, _val in _digit_keys:
+            for _k in (_key, _numpad):
+                _add_keymap_entry(
+                    kc,
+                    name=km_name,
+                    space_type=space,
+                    idname='paint_system.set_brush_strength',
+                    key=_k,
+                    properties={'value': _val},
+                )
+
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(
             kc,
