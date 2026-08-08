@@ -193,6 +193,16 @@ def _rasterize_polygon(width: int, height: int, uv_points) -> np.ndarray:
     return mask
 
 
+def _box3(m: np.ndarray) -> np.ndarray:
+    """3x3 박스 블러 — 라쏘 외곽 안티앨리어스/페더용."""
+    pad = np.pad(m, 1, mode='edge')
+    return (
+        pad[0:-2, 0:-2] + pad[0:-2, 1:-1] + pad[0:-2, 2:]
+        + pad[1:-1, 0:-2] + pad[1:-1, 1:-1] + pad[1:-1, 2:]
+        + pad[2:, 0:-2] + pad[2:, 1:-1] + pad[2:, 2:]
+    ) / 9.0
+
+
 def _get_mask_pixels(img) -> np.ndarray:
     w, h = int(img.size[0]), int(img.size[1])
     buf = np.empty(w * h * 4, dtype=np.float32)
@@ -313,6 +323,8 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
         uv_points = [_region_to_uv(context, region, p) for p in self._points]
         w, h = _active_image_size(context)
         poly = _rasterize_polygon(w, h, uv_points)  # 선택 안쪽 = 1
+        # 외곽 안티앨리어스 + 약한 페더 (~2px) — 계단 현상·날카로운 경계 보정
+        poly = _box3(_box3(poly))
 
         mask_img = _ensure_mask_image(w, h)
         ip = context.tool_settings.image_paint
@@ -379,11 +391,14 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
             pass
         if color is None:
             color = tuple(ip.brush.color)
-        # 레이어 이미지는 8bit sRGB — pixels 배열도 sRGB 인코딩 값이므로
-        # 브러시 색(sRGB)을 그대로 쓴다. 리니어로 변환하면 이중 감마로 어두워진다.
+        # 브러시 색은 리니어 값이고 레이어 이미지 픽셀 배열은 sRGB 인코딩이므로
+        # 리니어→sRGB 인코딩을 거쳐야 브러시 스트로크와 같은 색이 된다
         fill_rgb = mathutils.Color(color)
+        if hasattr(fill_rgb, 'from_scene_linear_to_srgb'):
+            fill_rgb = fill_rgb.from_scene_linear_to_srgb()
 
-        # 선택 영역: 스텐실(차단 맵)의 반전. 선택이 없으면 전체 채움
+        # 선택 영역: 스텐실(차단 맵)의 반전을 연속값(0~1)으로 사용 —
+        # 페더된 외곽이 부드럽게 섞이도록 소프트 알파 합성한다
         selected = None
         if ip.use_stencil_layer and ip.stencil_image is not None:
             mask_img = ip.stencil_image
@@ -393,7 +408,7 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
                 ys = (np.arange(h) * mh // h).clip(0, mh - 1)
                 xs = (np.arange(w) * mw // w).clip(0, mw - 1)
                 masked = masked[np.ix_(ys, xs)]
-            selected = (masked < 0.5)
+            selected = np.clip(1.0 - masked, 0.0, 1.0)
 
         buf = np.empty(w * h * 4, dtype=np.float32)
         img.pixels.foreach_get(buf)
@@ -402,7 +417,15 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
         if selected is None:
             rgba[:, :, :] = fill
         else:
-            rgba[selected] = fill
+            a = selected
+            src_a = rgba[:, :, 3]
+            out_a = a + src_a * (1.0 - a)
+            safe = np.maximum(out_a, 1e-6)
+            for c in range(3):
+                rgba[:, :, c] = (
+                    fill[c] * a + rgba[:, :, c] * src_a * (1.0 - a)
+                ) / safe
+            rgba[:, :, 3] = out_a
         img.pixels.foreach_set(rgba.ravel())
         img.update()
         # 뎁스그래프에 변경을 통지해야 EEVEE가 GPU 텍스처를 재업로드한다
