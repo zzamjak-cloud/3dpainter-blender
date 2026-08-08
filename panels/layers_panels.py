@@ -778,8 +778,9 @@ class MAT_MT_LayerMenu(PSContextMixin, Menu):
             text="Merge Up",
             icon="TRIA_UP_BAR"
         )
+        # 3DPainter 포크: 즉시 병합 (복잡한 케이스는 내부에서 베이크 병합으로 폴백)
         layout.operator(
-            "paint_system.merge_down",
+            "paint_system.quick_merge_down",
             text="Merge Down",
             icon="TRIA_DOWN_BAR"
         )

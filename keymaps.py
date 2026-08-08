@@ -193,7 +193,7 @@ def register() -> None:
                 kc,
                 name=km_name,
                 space_type=space,
-                idname='paint_system.merge_down',
+                idname='paint_system.quick_merge_down',
                 key='E',
                 **_mods,
             )
