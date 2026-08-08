@@ -146,13 +146,13 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
         scene[KEY_CANVAS] = canvas.name
         scene[KEY_SOURCE] = src.name
 
-        # 2. 캔버스를 텍스처 페인트 모드로 준비 (이후 클릭 전환이 매끄럽도록)
+        # 2. 캔버스를 텍스처 페인트 모드에 넣어둔다 — 이후 클릭 전환이
+        # 오퍼레이터 없이 활성 오브젝트 교체만으로 끝나 undo를 오염시키지 않는다
         prev_mode = src.mode
         if prev_mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
         context.view_layer.objects.active = canvas
         bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
-        bpy.ops.object.mode_set(mode='OBJECT')
 
         # 3. 영역 분할 → 오른쪽 절반을 2D 뷰로 구성
         areas_before = set(a.as_pointer() for a in context.screen.areas)
@@ -169,11 +169,10 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
         space = new_area.spaces.active
         region = next(r for r in new_area.regions if r.type == 'WINDOW')
 
-        # 4. 캔버스만 선택 → 로컬 뷰로 격리
+        # 4. 캔버스만 선택 → 로컬 뷰로 격리 (캔버스는 텍스처 페인트 모드 유지)
         for o in context.view_layer.objects:
             o.select_set(False)
         canvas.select_set(True)
-        context.view_layer.objects.active = canvas
         with context.temp_override(area=new_area, region=region):
             bpy.ops.view3d.localview(frame_selected=True)
 
@@ -248,12 +247,20 @@ class PAINTSYSTEM_OT_CanvasSwitch(Operator):
 
         target = canvas if in_canvas_view else src
         if context.view_layer.objects.active != target:
+            # 활성 교체는 순수 대입이라 undo 스텝을 만들지 않는다.
+            # 양쪽 오브젝트 모두 셋업 시점에 텍스처 페인트 모드로 유지되므로
+            # 원칙적으로 mode_set이 필요 없지만, 어긋난 경우에만 undo 억제 후 복구.
             context.view_layer.objects.active = target
             if context.mode != 'PAINT_TEXTURE':
+                prefs = bpy.context.preferences.edit
+                prev_undo = prefs.use_global_undo
+                prefs.use_global_undo = False
                 try:
                     bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
                 except RuntimeError:
                     return {'PASS_THROUGH'}
+                finally:
+                    prefs.use_global_undo = prev_undo
         return {'PASS_THROUGH'}
 
 
