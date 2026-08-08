@@ -60,6 +60,22 @@ def _psd_to_ps_blend(psd_mode) -> str:
     return _PSD_TO_PS_EXTRA.get(name, 'MIX')
 
 
+def channel_coord_settings(context, channel) -> tuple[str, str]:
+    """새 레이어에 쓸 (coord_type, uv_map_name) — 기존 형제 레이어를 따라간다.
+
+    빈 uv_map_name으로 레이어를 만들면 표시(렌더 UV)와 페인팅(활성 UV)이
+    어긋나 스트로크가 아일랜드 수만큼 복제돼 보이는 문제가 있다.
+    """
+    for l in channel.flattened_layers:
+        if l.type == 'IMAGE' and l.uv_map_name:
+            return l.coord_type, l.uv_map_name
+    ps_obj = PSContextMixin.parse_context(context).ps_object
+    if ps_obj and ps_obj.type == 'MESH' and ps_obj.data.uv_layers:
+        uv = ps_obj.data.uv_layers.active or ps_obj.data.uv_layers[0]
+        return 'UV', uv.name
+    return 'UV', ""
+
+
 def _image_layers_top_down(channel):
     """채널의 이미지 레이어를 UI(위→아래) 순서로 반환한다."""
     return [
@@ -203,9 +219,11 @@ def _import_psd_into_channel(context, channel, path, create_missing=True) -> int
         elif create_missing:
             img = bpy.data.images.new(psd_layer.name, width=w, height=h, alpha=True)
             _uint8_to_image(img, arr)
+            coord_type, uv_map_name = channel_coord_settings(context, channel)
             ps_layer = channel.create_layer(
                 context, layer_name=psd_layer.name, layer_type='IMAGE',
-                image=img, insert_at='TOP', update_active_index=False)
+                image=img, insert_at='TOP', update_active_index=False,
+                coord_type=coord_type, uv_map_name=uv_map_name)
         else:
             continue
         ps_layer.enabled = bool(psd_layer.visible)

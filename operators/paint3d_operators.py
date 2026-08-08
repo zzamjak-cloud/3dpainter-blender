@@ -14,7 +14,7 @@ from bpy.props import StringProperty
 from bpy.types import Operator
 
 from .common import PSContextMixin
-from .psd_operators import _set_layer_opacity
+from .psd_operators import _set_layer_opacity, channel_coord_settings
 
 # Canvas2D globalCompositeOperation → Paint System 블렌드 모드
 _WEB_TO_PS_BLEND = {
@@ -117,10 +117,12 @@ class PAINTSYSTEM_OT_ImportPaint3D(PSContextMixin, Operator):
                 img = bpy.data.images.load(png_path)
                 img.pack()  # 임시 파일이 사라져도 .blend에 유지
                 img.name = entry.get('name', img.name)
+                coord_type, uv_map_name = channel_coord_settings(context, channel)
                 layer = channel.create_layer(
                     context, layer_name=entry.get('name', 'Layer'),
                     layer_type='IMAGE', image=img,
-                    insert_at='TOP', update_active_index=False)
+                    insert_at='TOP', update_active_index=False,
+                    coord_type=coord_type, uv_map_name=uv_map_name)
                 layer.enabled = bool(entry.get('visible', True))
                 layer.blend_mode = _WEB_TO_PS_BLEND.get(
                     entry.get('blendMode', 'source-over'), 'MIX')
