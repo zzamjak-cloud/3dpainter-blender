@@ -1,0 +1,358 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# 3DPainter 포크 추가 기능: Projection Tex — 2D 이미지를 현재 뷰에서 모델에 투사
+#
+# 흐름: 이미지 등록(Import) → 뷰포트 오버레이로 위치/스케일 조정(모달)
+# → Enter 시 리전 크기 캔버스에 합성 → 신규 레이어 생성 →
+# 네이티브 paint.project_image로 투사 (오클루전·심 블리드 자동 처리).
+
+import os
+
+import gpu
+import numpy as np
+from gpu_extras.batch import batch_for_shader
+
+import bpy
+from bpy.props import (
+    CollectionProperty,
+    FloatProperty,
+    IntProperty,
+    StringProperty,
+)
+from bpy.types import Operator, PropertyGroup
+
+from .common import PSContextMixin
+from .psd_operators import channel_coord_settings
+
+
+class PSProjectionTexItem(PropertyGroup):
+    name: StringProperty(name="Name")
+    filepath: StringProperty(subtype='FILE_PATH')
+    image_name: StringProperty()
+    mtime: FloatProperty(default=0.0)
+
+    def get_image(self):
+        return bpy.data.images.get(self.image_name)
+
+
+def _active_item(context):
+    scene = context.scene
+    items = scene.ps_projection_textures
+    idx = scene.ps_projection_active_index
+    if 0 <= idx < len(items):
+        return items[idx]
+    return None
+
+
+class PAINTSYSTEM_OT_ProjectionImport(Operator):
+    """이미지 파일(JPG/PNG/PSD)을 투사 목록에 등록한다 (다중 선택 가능)"""
+    bl_idname = "paint_system.projection_import"
+    bl_label = "Import Projection Image"
+    bl_options = {'REGISTER'}
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    directory: StringProperty(subtype='DIR_PATH')
+    files: CollectionProperty(type=bpy.types.OperatorFileListElement)
+    filter_glob: StringProperty(
+        default='*.jpg;*.jpeg;*.png;*.psd', options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        scene = context.scene
+        paths = [os.path.join(self.directory, f.name) for f in self.files if f.name]
+        if not paths and self.filepath:
+            paths = [self.filepath]
+        count = 0
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            try:
+                img = bpy.data.images.load(path, check_existing=True)
+            except RuntimeError as e:
+                self.report({'WARNING'}, f"불러오기 실패: {os.path.basename(path)} ({e})")
+                continue
+            item = scene.ps_projection_textures.add()
+            item.name = os.path.basename(path)
+            item.filepath = path
+            item.image_name = img.name
+            item.mtime = os.path.getmtime(path)
+            count += 1
+        if count:
+            scene.ps_projection_active_index = len(scene.ps_projection_textures) - 1
+        self.report({'INFO'}, f"투사 이미지 {count}개 등록")
+        return {'FINISHED'}
+
+
+class PAINTSYSTEM_OT_ProjectionRemove(Operator):
+    """선택한 투사 이미지를 목록에서 제거한다"""
+    bl_idname = "paint_system.projection_remove"
+    bl_label = "Remove Projection Image"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _active_item(context) is not None
+
+    def execute(self, context):
+        scene = context.scene
+        idx = scene.ps_projection_active_index
+        item = scene.ps_projection_textures[idx]
+        img = item.get_image()
+        if img is not None and img.users <= 1:
+            bpy.data.images.remove(img)
+        scene.ps_projection_textures.remove(idx)
+        scene.ps_projection_active_index = min(
+            idx, len(scene.ps_projection_textures) - 1)
+        return {'FINISHED'}
+
+
+def _bilinear_resize_rgba(src: np.ndarray, dw: int, dh: int) -> np.ndarray:
+    """(sh, sw, 4) → (dh, dw, 4) 바이리니어 리사이즈."""
+    sh, sw = src.shape[:2]
+    ys = np.linspace(0.0, sh - 1.0, dh, dtype=np.float32)
+    xs = np.linspace(0.0, sw - 1.0, dw, dtype=np.float32)
+    y0 = np.floor(ys).astype(np.int32)
+    x0 = np.floor(xs).astype(np.int32)
+    y1 = np.clip(y0 + 1, 0, sh - 1)
+    x1 = np.clip(x0 + 1, 0, sw - 1)
+    fy = (ys - y0)[:, None, None]
+    fx = (xs - x0)[None, :, None]
+    a = src[np.ix_(y0, x0)]
+    b = src[np.ix_(y0, x1)]
+    c = src[np.ix_(y1, x0)]
+    d = src[np.ix_(y1, x1)]
+    return (a * (1 - fy) * (1 - fx) + b * (1 - fy) * fx
+            + c * fy * (1 - fx) + d * fy * fx).astype(np.float32)
+
+
+class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
+    """투사 이미지를 뷰포트에 배치한다 — 드래그: 이동, 휠: 크기,
+    Enter: 신규 레이어로 투사 적용, ESC/우클릭: 취소"""
+    bl_idname = "paint_system.projection_place"
+    bl_label = "Place Projection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        item = _active_item(context)
+        ps_ctx = PSContextMixin.parse_context(context)
+        return (
+            item is not None and item.get_image() is not None
+            and context.mode == 'PAINT_TEXTURE'
+            and ps_ctx.active_channel is not None
+        )
+
+    def invoke(self, context, event):
+        if context.area is None or context.area.type != 'VIEW_3D':
+            self.report({'WARNING'}, "3D 뷰에서 실행하세요")
+            return {'CANCELLED'}
+        region = context.region
+        if region is None:
+            # 패널 버튼에서 호출되면 region이 UI 리전이므로 WINDOW 리전을 찾는다
+            region = next(
+                (r for r in context.area.regions if r.type == 'WINDOW'), None)
+            if region is None:
+                return {'CANCELLED'}
+        self._region_ptr = region.as_pointer()
+        self._item = _active_item(context)
+        img = self._item.get_image()
+        sw, sh = int(img.size[0]), int(img.size[1])
+        if sw == 0 or sh == 0:
+            self.report({'ERROR'}, "이미지를 읽을 수 없습니다")
+            return {'CANCELLED'}
+        self._img_size = (sw, sh)
+        self._center = [region.width * 0.5, region.height * 0.5]
+        self._scale = min(region.width / sw, region.height / sh) * 0.5
+        self._dragging = False
+        self._drag_offset = (0.0, 0.0)
+        self._handle = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw, (), 'WINDOW', 'POST_PIXEL')
+        context.window_manager.modal_handler_add(self)
+        context.area.header_text_set(
+            "투사 배치 — 드래그: 이동 · 휠: 크기 · Enter: 적용 · ESC: 취소")
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        context.area.tag_redraw()
+        if event.type == 'LEFTMOUSE':
+            if event.value == 'PRESS':
+                self._dragging = True
+                self._drag_offset = (
+                    self._center[0] - event.mouse_region_x,
+                    self._center[1] - event.mouse_region_y,
+                )
+            elif event.value == 'RELEASE':
+                self._dragging = False
+            return {'RUNNING_MODAL'}
+        if event.type == 'MOUSEMOVE' and self._dragging:
+            self._center[0] = event.mouse_region_x + self._drag_offset[0]
+            self._center[1] = event.mouse_region_y + self._drag_offset[1]
+            return {'RUNNING_MODAL'}
+        if event.type in {'WHEELUPMOUSE', 'EQUAL', 'NUMPAD_PLUS'}:
+            self._scale *= 1.05
+            return {'RUNNING_MODAL'}
+        if event.type in {'WHEELDOWNMOUSE', 'MINUS', 'NUMPAD_MINUS'}:
+            self._scale = max(self._scale / 1.05, 0.01)
+            return {'RUNNING_MODAL'}
+        if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            self._finish(context)
+            return self._apply(context)
+        if event.type in {'RIGHTMOUSE', 'ESC'}:
+            self._finish(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}  # 그 외 이벤트 소비 → 뷰포트 고정
+
+    def _finish(self, context):
+        if self._handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+            self._handle = None
+        context.area.header_text_set(None)
+        context.area.tag_redraw()
+
+    def _rect(self):
+        sw, sh = self._img_size
+        dw, dh = sw * self._scale, sh * self._scale
+        x0 = self._center[0] - dw * 0.5
+        y0 = self._center[1] - dh * 0.5
+        return x0, y0, dw, dh
+
+    def _draw(self):
+        region = bpy.context.region
+        if region is None or region.as_pointer() != self._region_ptr:
+            return
+        img = self._item.get_image()
+        if img is None:
+            return
+        x0, y0, dw, dh = self._rect()
+        try:
+            tex = gpu.texture.from_image(img)
+            shader = gpu.shader.from_builtin('IMAGE')
+            batch = batch_for_shader(
+                shader, 'TRI_FAN',
+                {
+                    "pos": ((x0, y0), (x0 + dw, y0),
+                            (x0 + dw, y0 + dh), (x0, y0 + dh)),
+                    "texCoord": ((0, 0), (1, 0), (1, 1), (0, 1)),
+                },
+            )
+            gpu.state.blend_set('ALPHA')
+            shader.uniform_sampler("image", tex)
+            batch.draw(shader)
+            gpu.state.blend_set('NONE')
+        except Exception:
+            pass
+
+    def _apply(self, context):
+        region = context.region
+        img = self._item.get_image()
+        rw, rh = region.width, region.height
+
+        # 1. 리전 크기 캔버스에 오버레이와 동일한 배치로 합성
+        sw, sh = self._img_size
+        buf = np.empty(sw * sh * 4, dtype=np.float32)
+        img.pixels.foreach_get(buf)
+        src = buf.reshape(sh, sw, 4)
+        x0, y0, dw, dh = self._rect()
+        dw_i, dh_i = max(int(round(dw)), 1), max(int(round(dh)), 1)
+        resized = _bilinear_resize_rgba(src, dw_i, dh_i)
+
+        canvas = np.zeros((rh, rw, 4), dtype=np.float32)
+        dx0, dy0 = int(round(x0)), int(round(y0))
+        cx0, cy0 = max(dx0, 0), max(dy0, 0)
+        cx1, cy1 = min(dx0 + dw_i, rw), min(dy0 + dh_i, rh)
+        if cx1 <= cx0 or cy1 <= cy0:
+            self.report({'WARNING'}, "이미지가 뷰포트 밖에 있습니다")
+            return {'CANCELLED'}
+        canvas[cy0:cy1, cx0:cx1] = resized[
+            cy0 - dy0:cy1 - dy0, cx0 - dx0:cx1 - dx0]
+
+        temp = bpy.data.images.new(
+            "PS Projection Temp", width=rw, height=rh, alpha=True)
+        temp.pixels.foreach_set(canvas.ravel())
+        temp.update()
+
+        try:
+            # 2. 신규 레이어 생성 (현재 캔버스 해상도)
+            ps_ctx = self.parse_context(context)
+            channel = ps_ctx.active_channel
+            ip = context.tool_settings.image_paint
+            base = ip.canvas
+            lw = int(base.size[0]) if base is not None and base.size[0] else 2048
+            lh = int(base.size[1]) if base is not None and base.size[1] else 2048
+            layer_img = bpy.data.images.new(
+                f"Projection {self._item.name}", width=lw, height=lh, alpha=True)
+            coord_type, uv_map_name = channel_coord_settings(context, channel)
+            channel.create_layer(
+                context, layer_name=f"Projection {self._item.name}",
+                layer_type='IMAGE', image=layer_img, insert_at='TOP',
+                coord_type=coord_type, uv_map_name=uv_map_name)
+            # 새 레이어를 페인트 캔버스로 확정
+            ip.canvas = layer_img
+
+            # 3. 네이티브 투사 (현재 뷰 기준, 오클루전 자동)
+            bpy.ops.paint.project_image(image=temp.name)
+            layer_img.update()
+            if hasattr(layer_img, 'update_tag'):
+                layer_img.update_tag()
+        finally:
+            bpy.data.images.remove(temp)
+
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        self.report({'INFO'}, f"투사 완료 → 레이어 'Projection {self._item.name}'")
+        return {'FINISHED'}
+
+
+def _autoreload_timer():
+    """등록된 투사 이미지의 원본 파일 변경을 감시해 자동 리로드한다."""
+    scene = bpy.context.scene
+    if scene is None:
+        return 2.0
+    items = getattr(scene, 'ps_projection_textures', None)
+    if not items:
+        return 2.0
+    for item in items:
+        try:
+            if not item.filepath or not os.path.isfile(item.filepath):
+                continue
+            mtime = os.path.getmtime(item.filepath)
+            if mtime > item.mtime + 1e-4:
+                item.mtime = mtime
+                img = item.get_image()
+                if img is not None:
+                    img.reload()
+                    if hasattr(img, 'update_tag'):
+                        img.update_tag()
+        except Exception:
+            continue
+    return 2.0
+
+
+classes = (
+    PSProjectionTexItem,
+    PAINTSYSTEM_OT_ProjectionImport,
+    PAINTSYSTEM_OT_ProjectionRemove,
+    PAINTSYSTEM_OT_ProjectionPlace,
+)
+
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.ps_projection_textures = CollectionProperty(
+        type=PSProjectionTexItem)
+    bpy.types.Scene.ps_projection_active_index = IntProperty(default=0)
+    bpy.app.timers.register(_autoreload_timer, first_interval=2.0, persistent=True)
+
+
+def unregister():
+    if bpy.app.timers.is_registered(_autoreload_timer):
+        bpy.app.timers.unregister(_autoreload_timer)
+    del bpy.types.Scene.ps_projection_textures
+    del bpy.types.Scene.ps_projection_active_index
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
