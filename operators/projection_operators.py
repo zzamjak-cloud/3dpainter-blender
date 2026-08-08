@@ -292,8 +292,9 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
             # 새 레이어를 페인트 캔버스로 확정
             ip.canvas = layer_img
 
-            # 3. 네이티브 투사 (현재 뷰 기준, 오클루전 자동)
-            bpy.ops.paint.project_image(image=temp.name)
+            # 3. 네이티브 투사 — project_image는 씬 카메라 기준이므로
+            # 현재 뷰포트와 일치하는 임시 카메라를 만들어 투사한다
+            self._project_from_view(context, temp, rw, rh)
             layer_img.update()
             if hasattr(layer_img, 'update_tag'):
                 layer_img.update_tag()
@@ -305,6 +306,48 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
                 area.tag_redraw()
         self.report({'INFO'}, f"투사 완료 → 레이어 'Projection {self._item.name}'")
         return {'FINISHED'}
+
+    @staticmethod
+    def _project_from_view(context, temp_img, rw: int, rh: int) -> None:
+        """현재 뷰포트와 동일한 임시 카메라로 project_image를 실행한다."""
+        import math
+
+        scene = context.scene
+        space = context.space_data
+        rv3d = context.region.data
+        wm = rv3d.window_matrix
+
+        cam_data = bpy.data.cameras.new("PS Proj Cam")
+        cam_obj = bpy.data.objects.new("PS Proj Cam", cam_data)
+        context.collection.objects.link(cam_obj)
+        cam_obj.matrix_world = rv3d.view_matrix.inverted()
+        cam_data.sensor_fit = 'HORIZONTAL'
+        if rv3d.view_perspective == 'ORTHO':
+            cam_data.type = 'ORTHO'
+            cam_data.ortho_scale = 2.0 / wm[0][0]
+        else:
+            cam_data.type = 'PERSP'
+            cam_data.angle_x = 2.0 * math.atan(1.0 / wm[0][0])
+        if space is not None:
+            cam_data.clip_start = space.clip_start
+            cam_data.clip_end = space.clip_end
+
+        render = scene.render
+        prev = (scene.camera, render.resolution_x, render.resolution_y,
+                render.resolution_percentage)
+        scene.camera = cam_obj
+        render.resolution_x = rw
+        render.resolution_y = rh
+        render.resolution_percentage = 100
+        try:
+            bpy.ops.paint.project_image(image=temp_img.name)
+        finally:
+            scene.camera = prev[0]
+            render.resolution_x = prev[1]
+            render.resolution_y = prev[2]
+            render.resolution_percentage = prev[3]
+            bpy.data.objects.remove(cam_obj)
+            bpy.data.cameras.remove(cam_data)
 
 
 def _autoreload_timer():
