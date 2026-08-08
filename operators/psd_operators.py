@@ -271,6 +271,38 @@ class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
+class PAINTSYSTEM_OT_OpenPSDInPhotoshop(Operator):
+    """현재 연동된 PSD 파일을 포토샵에서 연다"""
+    bl_idname = "paint_system.open_psd_in_photoshop"
+    bl_label = "Open PS"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        path = context.scene.get(KEY_PSD_PATH)
+        return bool(path) and os.path.isfile(bpy.path.abspath(path))
+
+    def execute(self, context):
+        import subprocess
+        import sys
+        path = bpy.path.abspath(context.scene.get(KEY_PSD_PATH))
+        try:
+            if sys.platform == 'darwin':
+                # 포토샵 지정 실행, 미설치 등 실패 시 기본 연결 앱으로 폴백
+                r = subprocess.run(
+                    ['open', '-a', 'Adobe Photoshop', path], capture_output=True)
+                if r.returncode != 0:
+                    subprocess.run(['open', path])
+            elif sys.platform.startswith('win'):
+                os.startfile(path)  # 기본 연결 프로그램 (보통 포토샵)
+            else:
+                subprocess.run(['xdg-open', path])
+        except Exception as e:
+            self.report({'ERROR'}, f"파일을 열 수 없습니다: {e}")
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
 def _sync_timer():
     """PSD 파일 변경 감시 — 포토샵에서 저장하면 이름이 같은 레이어 픽셀 갱신."""
     if not _sync_state["running"]:
@@ -329,6 +361,7 @@ def is_sync_running() -> bool:
 classes = (
     PAINTSYSTEM_OT_ExportPSD,
     PAINTSYSTEM_OT_ImportPSD,
+    PAINTSYSTEM_OT_OpenPSDInPhotoshop,
     PAINTSYSTEM_OT_TogglePSDSync,
 )
 

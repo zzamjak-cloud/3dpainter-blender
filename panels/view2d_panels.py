@@ -40,8 +40,6 @@ class MAT_PT_PaintSystem2DView(Panel):
         box = layout.box()
         col = box.column(align=True)
         col.label(text="Selection", icon='SELECT_SET')
-        col.label(text="Ctrl/Cmd+Shift+Drag: Lasso (2D/3D)")
-        col.label(text="+Alt: Subtract / Toolbar: Lasso Tools")
         row = col.row(align=True)
         row.operator("paint_system.invert_selection", text="Invert")
         row.operator("paint_system.clear_selection", text="Clear")
@@ -59,6 +57,7 @@ class MAT_PT_PaintSystem2DView(Panel):
         row = col.row(align=True)
         row.operator("paint_system.export_psd", text="Export")
         row.operator("paint_system.import_psd", text="Import")
+        row.operator("paint_system.open_psd_in_photoshop", text="Open PS")
         psd_path = context.scene.get(KEY_PSD_PATH)
         if psd_path:
             import os
@@ -69,13 +68,6 @@ class MAT_PT_PaintSystem2DView(Panel):
                 icon='PAUSE' if is_sync_running() else 'PLAY',
                 depress=is_sync_running(),
             )
-
-        # 웹앱 자산 이전
-        layout.operator(
-            "paint_system.import_paint3d",
-            text="Import .paint3d (Web App)",
-            icon='IMPORT',
-        )
 
 
 classes = (
