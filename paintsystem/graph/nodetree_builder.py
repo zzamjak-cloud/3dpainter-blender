@@ -530,10 +530,7 @@ class NodeTreeBuilder:
             except Exception:
                 pass
             # Ensure identifier custom property is set/updated
-            try:
-                node.label = identifier
-            except Exception:
-                pass
+            self._set_node_ps_id(node, identifier)
         else:
             # If an existing node with same name but different type exists, replace it
             if existing is not None:
@@ -545,10 +542,7 @@ class NodeTreeBuilder:
             node.parent = self.frame  # Set the parent frame for organization
             node.width = self.node_width
             # Persist identifier on the node as a custom property
-            try:
-                node.label = identifier
-            except Exception:
-                pass
+            self._set_node_ps_id(node, identifier)
             self.nodes[identifier] = node
 
         # Set custom properties if provided
@@ -701,8 +695,8 @@ class NodeTreeBuilder:
             if node.type != 'REROUTE':
                 continue
             socket = node.inputs[0] if is_input_socket else node.outputs[0]
-            identifier = node.get("identifier", None)
-            if identifier is not None and identifier.startswith(f"{prefix}{socket_name}"):
+            identifier = self.get_node_identifier(node)
+            if identifier and identifier.startswith(f"{prefix}{socket_name}"):
                 return node, socket
         return None, None
 
@@ -767,13 +761,8 @@ class NodeTreeBuilder:
         reroute_node = self.tree.nodes.new(type='NodeReroute')
         identifier = f"{prefix}{socket_name}"
         reroute_node.name = identifier
-        reroute_node.label = identifier
         reroute_node.parent = self.frame
-        # Persist identifier on the reroute node as well for consistency
-        # try:
-        #     reroute_node["identifier"] = identifier
-        # except Exception:
-        #     pass
+        self._set_node_ps_id(reroute_node, identifier)
 
         if is_input_socket:
             sock = reroute_node.inputs[0]
@@ -847,7 +836,7 @@ class NodeTreeBuilder:
             if is_source and identifier == START:
                 # Try to find node by prefix and create a reroute node if not found
                 # node, sock = self._get_socket_by_prefix(False, socket_name)
-                node = next((node for node in self.nodes.values() if node.get("identifier", None).startswith(f"{START}{socket}")), None)
+                node = next((node for node in self.nodes.values() if (self.get_node_identifier(node) or "").startswith(f"{START}{socket}")), None)
                 if not node:
                     node, sock = self._create_reroute_node(socket, False)
                 else:
@@ -856,7 +845,7 @@ class NodeTreeBuilder:
                 self.edges[edge_idx].source = node.name # Update edge source
             elif not is_source and identifier == END:
                 # Try to find node by prefix and create a reroute node if not found
-                node = next((node for node in self.nodes.values() if node.get("identifier", None).startswith(f"{END}{socket}")), None)
+                node = next((node for node in self.nodes.values() if (self.get_node_identifier(node) or "").startswith(f"{END}{socket}")), None)
                 if not node:
                     node, sock = self._create_reroute_node(socket, True)
                 else:
@@ -931,22 +920,44 @@ class NodeTreeBuilder:
                     return candidate
         return None
 
-    def get_node_identifier(self, node: bpy.types.Node) -> str:
-        """
-        Get the identifier of a node.
-        """
+    @staticmethod
+    def _set_node_ps_id(node: bpy.types.Node, identifier: str) -> None:
+        """식별자를 ps_id 커스텀 프로퍼티와 label에 이중 기록한다."""
         try:
-            # Prefer custom identifier property when available
+            node["ps_id"] = identifier
+        except Exception:
+            pass
+        try:
+            node.label = identifier
+        except Exception:
+            pass
+
+    def get_node_identifier(self, node: bpy.types.Node) -> str:
+        """노드 식별자: ps_id → label → name. 읽기 시 ps_id를 백필한다."""
+        try:
             getter = getattr(node, 'get', None)
             if callable(getter):
-                ident = node.label
-                if ident is not None:
-                    return ident
+                ident = node.get("ps_id")
+                if ident:
+                    return str(ident)
+                # 구 키 / label 폴백
+                legacy = node.get("identifier")
+                if legacy:
+                    try:
+                        node["ps_id"] = legacy
+                    except Exception:
+                        pass
+                    return str(legacy)
+                label = getattr(node, 'label', None) or ''
+                if label:
+                    try:
+                        node["ps_id"] = label
+                    except Exception:
+                        pass
+                    return label
         except Exception as e:
             self._log(f"Exception getting node identifier: {node}, {e}")
-            pass
-        # Fallback to Blender internal name
-        return getattr(node, 'name', '')
+        return getattr(node, 'name', '') or ''
     
     def _remove_unused_nodes(self) -> None:
         """Remove nodes that are not connected to any other nodes."""
@@ -1386,8 +1397,9 @@ class EXAMPLE_PT_NodeTreeBuilderPanel(bpy.types.Panel):
             layout.label(text=f"Node Location: {active_node.location_absolute[0]:.2f}, {active_node.location_absolute[1]:.2f}")
             layout.prop(active_node, "name", text="Node Name")
             layout.prop(active_node, "width", text="Node Width")
-            if active_node.get("identifier", None) is not None:
-                layout.label(text=f"Node Identifier: {active_node.get('identifier')}")
+            ps_id = active_node.get("ps_id") or active_node.get("identifier")
+            if ps_id:
+                layout.label(text=f"Node Identifier: {ps_id}")
 
 
 classes = (

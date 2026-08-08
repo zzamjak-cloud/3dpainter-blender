@@ -103,6 +103,56 @@ def migrate_socket_names(layer_parent_map: dict[Layer, LayerParent]):
             layer.auto_update_node_tree = True
             layer.update_node_tree(bpy.context)
 
+def migrate_node_ps_id(layer_parent_map: dict[Layer, LayerParent]):
+    """기존 노드트리의 label/identifier를 ps_id로 백필한다.
+
+    versioning 프레임(label=버전 숫자)은 건너뛴다.
+    """
+    seen_trees = set()
+
+    def _migrate_tree(node_tree):
+        if node_tree is None:
+            return
+        try:
+            ptr = node_tree.as_pointer()
+        except ReferenceError:
+            return
+        if ptr in seen_trees:
+            return
+        seen_trees.add(ptr)
+        for node in node_tree.nodes:
+            if node.name == "versioning" or getattr(node, 'type', None) == 'FRAME' and node.label.isdigit():
+                continue
+            if node.get("ps_id"):
+                continue
+            legacy = node.get("identifier")
+            if legacy:
+                try:
+                    node["ps_id"] = legacy
+                except Exception:
+                    pass
+                continue
+            label = getattr(node, 'label', None) or ''
+            if not label:
+                continue
+            # 순수 숫자 label은 버전 프레임일 수 있어 스킵
+            if label.isdigit():
+                continue
+            try:
+                node["ps_id"] = label
+            except Exception:
+                pass
+
+    for layer, parent in layer_parent_map.items():
+        _migrate_tree(getattr(layer, 'node_tree', None))
+        channel = parent.get("channel")
+        if channel is not None:
+            _migrate_tree(getattr(channel, 'node_tree', None))
+        group = parent.get("group")
+        if group is not None:
+            _migrate_tree(getattr(group, 'node_tree', None))
+
+
 def update_layer_version(layer_parent_map: dict[Layer, LayerParent]):
     for layer, layer_parent in layer_parent_map.items():
         # Updating layer to the target version
