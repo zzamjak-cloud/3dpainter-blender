@@ -46,8 +46,11 @@ class MAT_PT_PaintSystem2DView(Panel):
         row = col.row(align=True)
         row.operator("paint_system.invert_selection", text="Invert")
         row.operator("paint_system.clear_selection", text="Clear")
-        if ip.use_stencil_layer:
-            col.prop(ip, "invert_stencil", text="Invert Stencil (Fix)")
+        col.operator(
+            "paint_system.fill_selection",
+            text="Fill (Alt+Del)",
+            icon='SNAP_FACE',
+        )
 
         # PSD 왕복 연동
         from ..operators.psd_operators import KEY_PSD_PATH, is_sync_running

@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# 3DPainter 포크 추가 기능: 라쏘 선택 → 스텐실 마스크 (선택 영역 안에만 페인팅)
+# 3DPainter 포크 추가 기능: 라쏘 선택 → 스텐실 마스크 (포토샵식 — 선택 안쪽만 페인팅)
 #
-# v1은 2D 텍스처 뷰(Flat UV Mesh 캔버스) 전용이다 — 정사영 평면이라
-# 화면→UV 매핑이 선형이어서 정확하다. 3D 뷰 투영은 후속 과제.
+# 인코딩: 스텐실 이미지 = "차단 맵" (1=페인팅 차단). 선택 영역 안쪽 = 0.
+# 블렌더 스텐실 표시가 차단 영역(선택 바깥)을 어둡게 틴트하므로
+# "선택 밖은 보호됨"이라는 포토샵과 유사한 시각 피드백이 된다.
+# v1은 2D 텍스처 뷰(Flat UV Mesh 캔버스) 전용.
 
 import gpu
 import numpy as np
@@ -16,9 +18,78 @@ from .view2d_operators import get_canvas_object, get_source_object
 
 MASK_IMAGE_NAME = "PS Selection Mask"
 
-# 블렌더 스텐실 레이어는 기본적으로 흰색 영역을 가린다(masked).
-# 선택 영역 내부를 1(흰색)로 굽고 invert를 켜서 "내부만 칠해짐"으로 만든다.
-INVERT_STENCIL = True
+# 커밋 후에도 유지되는 선택 윤곽선 (세션 한정)
+_outline = {"polys": [], "handle": None}
+
+
+def _draw_polyline(region, coords, color) -> None:
+    """닫힌 폴리라인을 그린다 — macOS Metal 호환 POLYLINE 셰이더 우선."""
+    gpu.state.blend_set('ALPHA')
+    try:
+        shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+        batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
+        shader.uniform_float("viewportSize", (region.width, region.height))
+        shader.uniform_float("lineWidth", 2.0)
+        shader.uniform_float("color", color)
+    except (ValueError, KeyError):
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
+        shader.uniform_float("color", color)
+    batch.draw(shader)
+    gpu.state.blend_set('NONE')
+
+
+def _in_canvas_view(space, canvas) -> bool:
+    try:
+        return bool(space.local_view) and canvas.local_view_get(space)
+    except (AttributeError, RuntimeError):
+        return False
+
+
+def _outline_draw():
+    ctx = bpy.context
+    region = ctx.region
+    space = ctx.space_data
+    scene = ctx.scene
+    if region is None or space is None or scene is None:
+        return
+    if getattr(space, 'type', None) != 'VIEW_3D':
+        return
+    canvas = get_canvas_object(scene)
+    if canvas is None or not _in_canvas_view(space, canvas):
+        return
+    rv3d = region.data
+    loc = canvas.location
+    for mode, uv_pts in _outline["polys"]:
+        coords = []
+        for u, v in uv_pts:
+            p2 = view3d_utils.location_3d_to_region_2d(
+                region, rv3d, (loc.x + u, loc.y + v, loc.z))
+            if p2 is None:
+                coords = []
+                break
+            coords.append((p2.x, p2.y, 0.0))
+        if len(coords) < 3:
+            continue
+        coords.append(coords[0])
+        color = (1.0, 0.4, 0.4, 0.9) if mode == 'SUBTRACT' else (1.0, 1.0, 1.0, 0.9)
+        _draw_polyline(region, coords, color)
+
+
+def _outline_ensure_handler() -> None:
+    if _outline["handle"] is None:
+        _outline["handle"] = bpy.types.SpaceView3D.draw_handler_add(
+            _outline_draw, (), 'WINDOW', 'POST_PIXEL')
+
+
+def _outline_clear() -> None:
+    if _outline["handle"] is not None:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(_outline["handle"], 'WINDOW')
+        except ValueError:
+            pass
+        _outline["handle"] = None
+    _outline["polys"].clear()
 
 
 def _region_to_uv(context, region, coord) -> tuple[float, float]:
@@ -73,8 +144,18 @@ def _get_mask_pixels(img) -> np.ndarray:
     return buf.reshape(h, w, 4)
 
 
-def _set_mask_pixels(img, rgba: np.ndarray) -> None:
-    img.pixels.foreach_set(rgba.astype(np.float32).ravel())
+def _set_masked_map(img, masked: np.ndarray) -> None:
+    """차단 맵(1=차단)을 RGB와 알파에 동일하게 기록한다.
+
+    스텐실이 어떤 채널을 읽든 일관되게 동작하도록 전 채널을 맞춘다.
+    """
+    h, w = masked.shape
+    rgba = np.empty((h, w, 4), dtype=np.float32)
+    rgba[:, :, 0] = masked
+    rgba[:, :, 1] = masked
+    rgba[:, :, 2] = masked
+    rgba[:, :, 3] = masked
+    img.pixels.foreach_set(rgba.ravel())
     img.update()
 
 
@@ -84,7 +165,7 @@ def _ensure_mask_image(width: int, height: int):
         if img is not None:
             bpy.data.images.remove(img)
         img = bpy.data.images.new(
-            MASK_IMAGE_NAME, width=width, height=height, alpha=False)
+            MASK_IMAGE_NAME, width=width, height=height, alpha=True)
         img.colorspace_settings.name = 'Non-Color'
     return img
 
@@ -94,7 +175,8 @@ def _apply_stencil(context, mask_img) -> None:
     ip = context.tool_settings.image_paint
     ip.use_stencil_layer = True
     ip.stencil_image = mask_img
-    ip.invert_stencil = INVERT_STENCIL
+    # 이미지 자체가 "차단 맵"이므로 반전 없이 사용한다
+    ip.invert_stencil = False
     for obj in (get_source_object(context.scene), get_canvas_object(context.scene)):
         if obj is not None and obj.type == 'MESH':
             mesh = obj.data
@@ -120,18 +202,12 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
 
     def invoke(self, context, event):
         canvas = get_canvas_object(context.scene)
-        space = context.space_data
-        try:
-            in_canvas_view = bool(space.local_view) and canvas.local_view_get(space)
-        except (AttributeError, RuntimeError):
-            in_canvas_view = False
-        if not in_canvas_view:
+        if not _in_canvas_view(context.space_data, canvas):
             self.report({'WARNING'}, "라쏘 선택은 2D 뷰에서 사용하세요 (v1 제약)")
             return {'CANCELLED'}
         self._region_ptr = context.region.as_pointer()
         self._points = [(event.mouse_region_x, event.mouse_region_y)]
-        # 트리거 콤보에 Ctrl/Shift가 포함되므로 Alt만 합성 모드 판정에 사용:
-        # 기본 = 새 선택(REPLACE), +Alt = 기존 선택에서 제외(SUBTRACT)
+        # 트리거 콤보에 Ctrl/Shift가 포함되므로 Alt만 합성 모드 판정에 사용
         self._mode = 'SUBTRACT' if event.alt else 'REPLACE'
         self._handle = bpy.types.SpaceView3D.draw_handler_add(
             self._draw, (context,), 'WINDOW', 'POST_PIXEL')
@@ -161,22 +237,10 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
             return
         if len(self._points) < 2:
             return
-        # macOS Metal에서 LINE_LOOP + line_width가 불안정해 POLYLINE 셰이더 사용
         coords = [(p[0], p[1], 0.0) for p in self._points]
         coords.append(coords[0])  # 루프 닫기
-        gpu.state.blend_set('ALPHA')
-        try:
-            shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
-            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
-            shader.uniform_float("viewportSize", (region.width, region.height))
-            shader.uniform_float("lineWidth", 2.0)
-            shader.uniform_float("color", (1.0, 1.0, 1.0, 0.9))
-        except (ValueError, KeyError):
-            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
-            shader.uniform_float("color", (1.0, 1.0, 1.0, 0.9))
-        batch.draw(shader)
-        gpu.state.blend_set('NONE')
+        color = (1.0, 0.4, 0.4, 0.9) if self._mode == 'SUBTRACT' else (1.0, 1.0, 1.0, 0.9)
+        _draw_polyline(region, coords, color)
 
     def _finish_draw(self, context):
         if self._handle is not None:
@@ -190,22 +254,99 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
         region = context.region
         uv_points = [_region_to_uv(context, region, p) for p in self._points]
         w, h = _active_image_size(context)
-        poly = _rasterize_polygon(w, h, uv_points)
+        poly = _rasterize_polygon(w, h, uv_points)  # 선택 안쪽 = 1
 
         mask_img = _ensure_mask_image(w, h)
-        rgba = _get_mask_pixels(mask_img)
-        if self._mode == 'REPLACE':
-            new = poly
-        elif self._mode == 'ADD':
-            new = np.maximum(rgba[:, :, 0], poly)
-        else:  # SUBTRACT
-            new = np.clip(rgba[:, :, 0] - poly, 0.0, 1.0)
-        rgba[:, :, 0] = new
-        rgba[:, :, 1] = new
-        rgba[:, :, 2] = new
-        rgba[:, :, 3] = 1.0
-        _set_mask_pixels(mask_img, rgba)
+        ip = context.tool_settings.image_paint
+        if ip.use_stencil_layer and ip.stencil_image == mask_img:
+            prev_masked = _get_mask_pixels(mask_img)[:, :, 0]
+        else:
+            prev_masked = np.ones((h, w), dtype=np.float32)  # 선택 없음 = 전면 차단
+
+        if self._mode == 'SUBTRACT':
+            masked = np.maximum(prev_masked, poly)  # 선택에서 빼기 = 차단 확장
+        else:  # REPLACE
+            masked = 1.0 - poly
+
+        selected_ratio = float(1.0 - masked.mean())
+        if selected_ratio <= 0.0:
+            self.report({'WARNING'}, "선택 영역이 비어 있습니다 — 캔버스 위에서 그려주세요")
+            return {'CANCELLED'}
+
+        _set_masked_map(mask_img, masked)
         _apply_stencil(context, mask_img)
+
+        # 선택 윤곽선 유지 표시
+        if self._mode == 'REPLACE':
+            _outline["polys"] = [(self._mode, uv_points)]
+        else:
+            _outline["polys"].append((self._mode, uv_points))
+        _outline_ensure_handler()
+        context.area.tag_redraw()
+        self.report({'INFO'}, f"선택 영역: 텍스처의 {selected_ratio * 100.0:.1f}%")
+        return {'FINISHED'}
+
+
+class PAINTSYSTEM_OT_FillSelection(Operator):
+    """선택 영역을 브러시 색으로 채운다 (포토샵 Alt+Backspace).
+    선택이 없으면 활성 레이어 전체를 채운다"""
+    bl_idname = "paint_system.fill_selection"
+    bl_label = "Fill with Brush Color"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'PAINT_TEXTURE'
+            and context.tool_settings.image_paint.canvas is not None
+        )
+
+    def execute(self, context):
+        import mathutils
+
+        ip = context.tool_settings.image_paint
+        img = ip.canvas
+        w, h = int(img.size[0]), int(img.size[1])
+        if w == 0 or h == 0:
+            return {'CANCELLED'}
+
+        # 브러시 색 (unified 설정 우선) → 이미지 픽셀은 리니어라 변환 필요
+        color = None
+        try:
+            from ..utils.unified_brushes import get_unified_settings
+            owner = get_unified_settings(context, 'use_unified_color')
+            if owner is not None:
+                color = tuple(owner.color)
+        except Exception:
+            pass
+        if color is None:
+            color = tuple(ip.brush.color)
+        linear = mathutils.Color(color)
+        if hasattr(linear, 'from_srgb_to_scene_linear'):
+            linear = linear.from_srgb_to_scene_linear()
+
+        # 선택 영역: 스텐실(차단 맵)의 반전. 선택이 없으면 전체 채움
+        selected = None
+        if ip.use_stencil_layer and ip.stencil_image is not None:
+            mask_img = ip.stencil_image
+            mh, mw = int(mask_img.size[1]), int(mask_img.size[0])
+            masked = _get_mask_pixels(mask_img)[:, :, 0]
+            if (mh, mw) != (h, w):  # 최근접 리샘플
+                ys = (np.arange(h) * mh // h).clip(0, mh - 1)
+                xs = (np.arange(w) * mw // w).clip(0, mw - 1)
+                masked = masked[np.ix_(ys, xs)]
+            selected = (masked < 0.5)
+
+        buf = np.empty(w * h * 4, dtype=np.float32)
+        img.pixels.foreach_get(buf)
+        rgba = buf.reshape(h, w, 4)
+        fill = np.array([linear.r, linear.g, linear.b, 1.0], dtype=np.float32)
+        if selected is None:
+            rgba[:, :, :] = fill
+        else:
+            rgba[selected] = fill
+        img.pixels.foreach_set(rgba.ravel())
+        img.update()
         return {'FINISHED'}
 
 
@@ -221,6 +362,10 @@ class PAINTSYSTEM_OT_ClearSelection(Operator):
 
     def execute(self, context):
         context.tool_settings.image_paint.use_stencil_layer = False
+        _outline_clear()
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
         return {'FINISHED'}
 
 
@@ -237,16 +382,25 @@ class PAINTSYSTEM_OT_InvertSelection(Operator):
 
     def execute(self, context):
         img = context.tool_settings.image_paint.stencil_image
-        rgba = _get_mask_pixels(img)
-        rgba[:, :, :3] = 1.0 - rgba[:, :, :3]
-        _set_mask_pixels(img, rgba)
+        masked = _get_mask_pixels(img)[:, :, 0]
+        _set_masked_map(img, 1.0 - masked)
         return {'FINISHED'}
 
 
 classes = (
     PAINTSYSTEM_OT_LassoSelect,
+    PAINTSYSTEM_OT_FillSelection,
     PAINTSYSTEM_OT_ClearSelection,
     PAINTSYSTEM_OT_InvertSelection,
 )
 
-register, unregister = bpy.utils.register_classes_factory(classes)
+_register, _unregister = bpy.utils.register_classes_factory(classes)
+
+
+def register():
+    _register()
+
+
+def unregister():
+    _outline_clear()
+    _unregister()

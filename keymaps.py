@@ -121,6 +121,18 @@ def register() -> None:
                 **_mods,
             )
 
+        # 3DPainter 포크: Alt+Delete/Backspace = 선택 영역을 브러시 색으로 채우기
+        # (맥 delete 키는 BACK_SPACE 코드로 들어온다)
+        for _key in ('BACK_SPACE', 'DEL'):
+            _add_keymap_entry(
+                kc,
+                name=km_name,
+                space_type=space,
+                idname='paint_system.fill_selection',
+                key=_key,
+                alt=True,
+            )
+
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(
             kc,
