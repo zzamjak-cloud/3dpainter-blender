@@ -6,6 +6,7 @@
 # 네이티브 paint.project_image로 투사 (오클루전·심 블리드 자동 처리).
 
 import os
+import sys
 
 import gpu
 import numpy as np
@@ -22,6 +23,7 @@ from bpy.types import Operator, PropertyGroup
 
 from .common import PSContextMixin
 from .psd_operators import channel_coord_settings
+from ..utils.registration import collect_classes
 
 
 class PSProjectionTexItem(PropertyGroup):
@@ -526,13 +528,7 @@ def _autoreload_timer():
     return 2.0
 
 
-classes = (
-    PSProjectionTexItem,
-    PAINTSYSTEM_OT_ProjectionImport,
-    PAINTSYSTEM_OT_ProjectionSelect,
-    PAINTSYSTEM_OT_ProjectionRemove,
-    PAINTSYSTEM_OT_ProjectionPlace,
-)
+classes = collect_classes(sys.modules[__name__])
 
 
 def register():

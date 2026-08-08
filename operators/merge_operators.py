@@ -6,6 +6,8 @@
 # PSD처럼 픽셀 합성만 하면 되므로 numpy로 즉시 처리하고, 복잡한 경우
 # (조정/절차 레이어, 클립, 다른 UV, 미지원 블렌드)만 기존 베이크로 폴백한다.
 
+import sys
+
 import numpy as np
 
 import bpy
@@ -13,6 +15,7 @@ from bpy.types import Operator
 
 from .common import PSContextMixin
 from .projection_operators import _bilinear_resize_rgba
+from ..utils.registration import collect_classes
 
 
 def _blend_rgb(mode: str, cb: np.ndarray, ct: np.ndarray) -> np.ndarray | None:
@@ -156,8 +159,6 @@ class PAINTSYSTEM_OT_QuickMergeDown(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-classes = (
-    PAINTSYSTEM_OT_QuickMergeDown,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = bpy.utils.register_classes_factory(classes)

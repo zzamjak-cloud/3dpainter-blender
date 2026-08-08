@@ -1,3 +1,4 @@
+import sys
 import time
 import bpy
 from bpy.types import Context, Image, Material, Operator, UILayout
@@ -9,9 +10,12 @@ from .common import PSContextMixin, PSImageCreateMixin, DEFAULT_PS_UV_MAP_NAME
 from ..paintsystem.data import Layer, set_layer_blend_type, get_layer_blend_type
 from ..paintsystem.context import parse_material
 from ..panels.common import get_icon_from_channel
+from ..utils.registration import collect_classes
 
 
 class BakeOperator(PSContextMixin, PSImageCreateMixin, Operator):
+    # 베이크 오퍼레이터 공용 베이스 — 자신은 등록 대상이 아니다
+    _ps_skip_register = True
     """Bake the active channel"""
     bl_options = {'REGISTER', 'UNDO'}
     
@@ -968,17 +972,6 @@ class PAINTSYSTEM_OT_MergeUp(BakeOperator):
         self.report({'INFO'}, f"Merged up in {round(end_time - start_time, 2)} seconds")
         return {'FINISHED'}
 
-classes = (
-    PAINTSYSTEM_OT_SelectAllBakedObjects,
-    PAINTSYSTEM_OT_BakeChannel,
-    PAINTSYSTEM_OT_BakeAllChannels,
-    PAINTSYSTEM_OT_TransferImageLayerUV,
-    PAINTSYSTEM_OT_ExportImage,
-    PAINTSYSTEM_OT_ExportAllImages,
-    PAINTSYSTEM_OT_DeleteBakedImage,
-    PAINTSYSTEM_OT_ConvertToImageLayer,
-    PAINTSYSTEM_OT_MergeDown,
-    PAINTSYSTEM_OT_MergeUp,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

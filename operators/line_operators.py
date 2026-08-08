@@ -2,10 +2,13 @@
 # 3DPainter 포크 추가 기능: 포토샵식 Shift+클릭 직선 스트로크
 
 import math
+import sys
 
 import bpy
 from bpy.types import Operator
 from bpy_extras import view3d_utils
+
+from ..utils.registration import collect_classes
 
 # 마지막 스트로크 시작점(앵커). (region 포인터, x, y) — 다른 리전에서는 무효 처리
 _anchor: tuple[int, float, float] | None = None
@@ -209,11 +212,6 @@ class PAINTSYSTEM_OT_SetBrushStrength(Operator):
         return {'FINISHED'}
 
 
-classes = (
-    PAINTSYSTEM_OT_RecordStrokeAnchor,
-    PAINTSYSTEM_OT_LineStroke,
-    PAINTSYSTEM_OT_EyedropperCursor,
-    PAINTSYSTEM_OT_SetBrushStrength,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = bpy.utils.register_classes_factory(classes)

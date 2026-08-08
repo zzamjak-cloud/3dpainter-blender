@@ -6,6 +6,7 @@
 # 않는다 — 정교한 보정은 포토샵에서, 페인팅은 블렌더에서.
 
 import os
+import sys
 
 import numpy as np
 
@@ -14,6 +15,7 @@ from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
 
 from .common import PSContextMixin
+from ..utils.registration import collect_classes
 
 # Paint System(MixRGB 계열) ↔ PSD 블렌드 모드 매핑
 _PS_TO_PSD = {
@@ -358,12 +360,7 @@ def is_sync_running() -> bool:
     return _sync_state["running"]
 
 
-classes = (
-    PAINTSYSTEM_OT_ExportPSD,
-    PAINTSYSTEM_OT_ImportPSD,
-    PAINTSYSTEM_OT_OpenPSDInPhotoshop,
-    PAINTSYSTEM_OT_TogglePSDSync,
-)
+classes = collect_classes(sys.modules[__name__])
 
 
 def register():

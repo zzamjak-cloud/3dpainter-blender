@@ -1,3 +1,5 @@
+import sys
+
 import bpy
 from bpy.types import AddonPreferences
 from bpy.props import BoolProperty, FloatProperty, EnumProperty
@@ -5,6 +7,7 @@ from bpy.utils import register_classes_factory
 
 from .common import find_keymap
 from ..preferences import addon_package
+from ..utils.registration import collect_classes
 
 class PaintSystemPreferences(AddonPreferences):
     """Demo bare-bones preferences"""
@@ -168,8 +171,6 @@ class PaintSystemPreferences(AddonPreferences):
         if kmi:
             self.draw_shortcut(box, kmi, "Toggle Eraser")
 
-classes = (
-    PaintSystemPreferences,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

@@ -1,9 +1,12 @@
+import sys
+
 import bpy
 from bpy.props import EnumProperty
 
 # ---
 from ..paintsystem.data import CHANNEL_TEMPLATE_ENUM, CHANNEL_TYPE_ENUM, COLOR_SPACE_ENUM
 from ..utils import get_next_unique_name
+from ..utils.registration import collect_classes
 from .common import MultiMaterialOperator, PSContextMixin, redraw_panel
 from ..paintsystem.list_manager import ListManager
 
@@ -196,11 +199,6 @@ class PAINTSYSTEM_OT_MoveChannelDown(PSContextMixin, MultiMaterialOperator):
         redraw_panel(context)
         return {'FINISHED'}
 
-classes = (
-    PAINTSYSTEM_OT_AddChannel,
-    PAINTSYSTEM_OT_DeleteChannel,
-    PAINTSYSTEM_OT_MoveChannelUp,
-    PAINTSYSTEM_OT_MoveChannelDown,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = bpy.utils.register_classes_factory(classes)

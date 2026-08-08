@@ -1,3 +1,5 @@
+import sys
+
 import bpy
 from bpy.props import (
     StringProperty, IntProperty, EnumProperty,
@@ -21,6 +23,7 @@ from ..paintsystem.data import (
 from ..paintsystem.image import save_image
 from ..utils import get_next_unique_name
 from ..utils.nodes import get_nodetree_socket_enum
+from ..utils.registration import collect_classes
 from .common import (
     PSContextMixin,
     scale_content,
@@ -1199,36 +1202,6 @@ class PAINTSYSTEM_OT_NewTextureMask(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-classes = (
-    PAINTSYSTEM_OT_NewImage,
-    PAINTSYSTEM_OT_NewFolder,
-    PAINTSYSTEM_OT_NewSolidColor,
-    PAINTSYSTEM_OT_NewAttribute,
-    PAINTSYSTEM_OT_NewAdjustment,
-    PAINTSYSTEM_OT_NewShader,
-    PAINTSYSTEM_OT_NewGradient,
-    PAINTSYSTEM_OT_NewGeometry,
-    PAINTSYSTEM_OT_FixMissingGradientEmpty,
-    PAINTSYSTEM_OT_SelectEmpty,
-    PAINTSYSTEM_OT_NewRandomColor,
-    PAINTSYSTEM_OT_NewTexture,
-    PAINTSYSTEM_OT_NewCustomNodeGroup,
-    PAINTSYSTEM_OT_DeleteItem,
-    PAINTSYSTEM_OT_MoveUp,
-    PAINTSYSTEM_OT_MoveDown,
-    PAINTSYSTEM_OT_CopyLayer,
-    PAINTSYSTEM_OT_CopyAllLayers,
-    PAINTSYSTEM_OT_PasteLayer,
-    PAINTSYSTEM_OT_UnlinkLayer,
-    PAINTSYSTEM_OT_AddAction,
-    PAINTSYSTEM_OT_DeleteAction,
-    PAINTSYSTEM_OT_ShowLayerWarnings,
-    PAINTSYSTEM_OT_SetProjectionView,
-    PAINTSYSTEM_OT_ProjectionViewReset,
-    PAINTSYSTEM_OT_NewValueMask,
-    PAINTSYSTEM_OT_NewImageMask,
-    PAINTSYSTEM_OT_NewAttributeMask,
-    PAINTSYSTEM_OT_NewTextureMask,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

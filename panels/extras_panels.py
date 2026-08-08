@@ -1,3 +1,5 @@
+import sys
+
 from bl_ui.properties_material import EEVEE_MATERIAL_PT_context_material
 import bpy
 from bpy.types import NodeTree, Panel, Menu, UILayout, Context
@@ -7,6 +9,7 @@ from .common import PSContextMixin, draw_layer_icon, get_event_icons, find_keyma
 from ..utils.version import is_newer_than
 from ..utils.unified_brushes import get_unified_settings
 from ..utils.nodes import is_in_nodetree
+from ..utils.registration import collect_classes
 
 from bl_ui.properties_paint_common import (
     UnifiedPaintPanel,
@@ -120,6 +123,8 @@ def draw_brush_settings(layout: UILayout, context: Context):
         col.prop(image_paint, "normal_angle", text="Angle")
 
 class MAT_PT_Brush(PSContextMixin, Panel, UnifiedPaintPanel):
+    # 현재 UI에서 쓰지 않아 등록 대상에서 제외한다
+    _ps_skip_register = True
     bl_idname = 'MAT_PT_Brush'
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -297,6 +302,8 @@ def draw_brush_color_settings(layout: UILayout, context: Context):
         sub_row.operator("paint.brush_colors_flip", icon='FILE_REFRESH', text="")
 
 class MAT_PT_BrushColor(PSContextMixin, Panel, UnifiedPaintPanel):
+    # 현재 UI에서 쓰지 않아 등록 대상에서 제외한다
+    _ps_skip_register = True
     bl_idname = 'MAT_PT_BrushColor'
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -518,14 +525,7 @@ def draw_paint_system_material(self, context):
         row.operator("paint_system.new_group", icon='ADD', text="")
         row.operator("paint_system.delete_group", icon='REMOVE', text="")
 
-classes = (
-    MAT_PT_BrushTooltips,
-    # MAT_PT_Brush,
-    MAT_PT_BrushColorSettings,
-    # MAT_PT_BrushColor,
-    MAT_PT_TexPaintRMBMenu,
-    NODE_PT_PaintSystemShaderEditor,
-)
+classes = collect_classes(sys.modules[__name__])
 
 _register, _unregister = register_classes_factory(classes)
 

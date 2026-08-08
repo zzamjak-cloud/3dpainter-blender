@@ -1,8 +1,11 @@
+import sys
+
 import bpy
 from bpy.types import Panel
 
 from .common import scale_content, PSContextMixin
 from bpy.utils import register_classes_factory
+from ..utils.registration import collect_classes
 
 
 class MAT_PT_PaintSystemQuickToolsDisplay(PSContextMixin, Panel):
@@ -142,10 +145,6 @@ class MAT_PT_PaintSystemQuickToolsPaint(PSContextMixin, Panel):
         row.operator("paint_system.quick_edit", text="Edit Externally", icon='IMAGE')
 
 
-classes = (
-    MAT_PT_PaintSystemQuickToolsDisplay,
-    MAT_PT_PaintSystemQuickToolsMesh,
-    MAT_PT_PaintSystemQuickToolsPaint,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)    

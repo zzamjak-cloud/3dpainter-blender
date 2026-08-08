@@ -1,3 +1,5 @@
+import sys
+
 from bpy.types import Operator, Object, NodeTree, Node
 from bpy.utils import register_classes_factory
 
@@ -12,6 +14,7 @@ from ..paintsystem.graph.nodetree_builder import capture_node_state, apply_node_
 from ..utils.nodes import find_nodes
 from bpy_extras.node_utils import connect_sockets
 from ..utils.logging import get_logger
+from ..utils.registration import collect_classes
 
 logger = get_logger(__name__)
 
@@ -210,8 +213,6 @@ class PAINTSYSTEM_OT_UpdatePaintSystemData(PSContextMixin, Operator):
             self.report({'WARNING'}, "\n".join(warning_messages))
         return {'FINISHED'}
 
-classes = (
-    PAINTSYSTEM_OT_UpdatePaintSystemData,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

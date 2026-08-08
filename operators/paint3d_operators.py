@@ -6,6 +6,7 @@
 
 import json
 import os
+import sys
 import tempfile
 import zipfile
 
@@ -15,6 +16,7 @@ from bpy.types import Operator
 
 from .common import PSContextMixin
 from .psd_operators import _set_layer_opacity, channel_coord_settings
+from ..utils.registration import collect_classes
 
 # Canvas2D globalCompositeOperation → Paint System 블렌드 모드
 _WEB_TO_PS_BLEND = {
@@ -133,8 +135,6 @@ class PAINTSYSTEM_OT_ImportPaint3D(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-classes = (
-    PAINTSYSTEM_OT_ImportPaint3D,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = bpy.utils.register_classes_factory(classes)

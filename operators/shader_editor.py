@@ -1,9 +1,12 @@
+import sys
+
 import bpy
 from bpy.types import Operator
 from bpy.utils import register_classes_factory
 
 from .common import PSContextMixin, execute_operator_in_area, wait_for_redraw
 from ..utils.nodes import find_node, is_in_nodetree
+from ..utils.registration import collect_classes
 
 
 class PAINTSYSTEM_OT_InspectLayerNodeTree(PSContextMixin, Operator):
@@ -105,9 +108,6 @@ class PAINTSYSTEM_OT_ExitAllNodeGroups(Operator):
         return {'FINISHED'}
 
 
-classes = [
-    PAINTSYSTEM_OT_InspectLayerNodeTree,
-    PAINTSYSTEM_OT_ExitAllNodeGroups,
-]
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

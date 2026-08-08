@@ -6,8 +6,12 @@
 # 상단 정사영 뷰포트가 곧 2D 텍스처 뷰가 되며, 어느 뷰에서 칠해도
 # 같은 레이어 이미지에 기록되므로 3D/2D가 실시간 상호 반영된다.
 
+import sys
+
 import bpy
 from bpy.types import Operator
+
+from ..utils.registration import collect_classes
 
 # 캔버스 오브젝트를 원점에서 밀어내 메인 뷰에서 모델과 겹치지 않게 한다
 CANVAS_OFFSET_X = 2.0
@@ -337,11 +341,7 @@ def _heal_after_undo(_scene, _depsgraph=None):
         bpy.app.timers.register(_heal_canvas_now, first_interval=0.05)
 
 
-classes = (
-    PAINTSYSTEM_OT_Toggle2DView,
-    PAINTSYSTEM_OT_Refresh2DCanvas,
-    PAINTSYSTEM_OT_CanvasSwitch,
-)
+classes = collect_classes(sys.modules[__name__])
 
 _register, _unregister = bpy.utils.register_classes_factory(classes)
 

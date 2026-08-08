@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # 3DPainter 포크 추가 기능: Projection Tex 패널
 
+import sys
+
 import bpy
 from bpy.types import Panel
+
+from ..utils.registration import collect_classes
 
 
 class MAT_PT_PaintSystemProjectionTex(Panel):
@@ -55,8 +59,6 @@ class MAT_PT_PaintSystemProjectionTex(Panel):
         )
 
 
-classes = (
-    MAT_PT_PaintSystemProjectionTex,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = bpy.utils.register_classes_factory(classes)

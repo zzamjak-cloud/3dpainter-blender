@@ -1,3 +1,5 @@
+import sys
+
 import bpy
 from bpy.props import BoolProperty, EnumProperty
 from bpy.types import Node, NodeTree, Operator
@@ -6,6 +8,7 @@ from bpy_extras.node_utils import connect_sockets, find_base_socket_type
 from mathutils import Vector
 
 from ..utils.version import is_newer_than
+from ..utils.registration import collect_classes
 
 from ..paintsystem.graph.common import get_library_nodetree
 
@@ -492,10 +495,6 @@ class PAINTSYSTEM_OT_MoveGroup(PSContextMixin, MultiMaterialOperator):
         return {'FINISHED'}
 
 
-classes = (
-    PAINTSYSTEM_OT_NewGroup,
-    PAINTSYSTEM_OT_DeleteGroup,
-    PAINTSYSTEM_OT_MoveGroup,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

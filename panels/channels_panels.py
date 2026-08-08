@@ -1,9 +1,12 @@
+import sys
+
 import bpy
 from bpy.types import UIList, Menu, UILayout, Context, Panel
 from bpy.utils import register_classes_factory
 from bpy_extras.node_utils import find_base_socket_type
 
 from ..paintsystem.data import CHANNEL_TEMPLATE_ENUM
+from ..utils.registration import collect_classes
 from .common import (
     PSContextMixin,
     get_icon_from_channel,
@@ -125,6 +128,8 @@ def draw_channels_panel(layout: UILayout, context: Context, ps_ctx=None):
         draw_channels_settings_panel(panel, context, ps_ctx=ps_ctx)
 
 class MAT_PT_ChannelsPanel(PSContextMixin, Panel):
+    # 현재 UI에서 쓰지 않아 등록 대상에서 제외한다
+    _ps_skip_register = True
     bl_idname = 'MAT_PT_ChannelsPanel'
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -214,6 +219,8 @@ def draw_channels_settings_panel(layout: UILayout, context: Context, ps_ctx=None
             col.prop(active_channel, "factor_max")
 
 class MAT_PT_ChannelsSettings(PSContextMixin, Panel):
+    # 부모 MAT_PT_ChannelsPanel이 등록되지 않으므로 함께 제외한다
+    _ps_skip_register = True
     bl_idname = 'MAT_PT_ChannelsSettings'
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -254,13 +261,6 @@ class MAT_MT_AddChannelMenu(PSContextMixin, Menu):
             for template in available_templates:
                 col.operator("paint_system.add_channel", text=template[1], icon_value=template[3]).template = template[0]
 
-classes = (
-    MAT_MT_PaintSystemChannelsMergeAndExport,
-    PAINTSYSTEM_UL_channels,
-    MAT_PT_ChannelsSelect,
-    # MAT_PT_ChannelsPanel,
-    # MAT_PT_ChannelsSettings,
-    MAT_MT_AddChannelMenu,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

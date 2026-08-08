@@ -1,3 +1,5 @@
+import sys
+
 import bpy
 from bpy.types import Operator
 from bpy.props import FloatVectorProperty, StringProperty, IntProperty, EnumProperty, BoolProperty, FloatProperty
@@ -12,6 +14,7 @@ from .common import (
 from ..paintsystem.image import set_image_pixels, ImageTiles
 from .image_filters import list_brush_presets, resolve_brush_preset_path
 from ..paintsystem.graph.common import DEFAULT_PS_UV_MAP_NAME
+from ..utils.registration import collect_classes
 import numpy
 
 IMAGE_FILTERS_AVAILABLE = True
@@ -454,20 +457,7 @@ if IMAGE_FILTERS_AVAILABLE:
             col.prop(self, "end_opacity", slider=True)
             col.prop(self, "gaussian_sigma")
 
-# Build classes list
-classes = [
-    PAINTSYSTEM_OT_InvertColors,
-    PAINTSYSTEM_OT_ResizeImage,
-    PAINTSYSTEM_OT_ClearImage,
-    PAINTSYSTEM_OT_FillImage,
-]
-
-if IMAGE_FILTERS_AVAILABLE:
-    classes.extend([
-        PAINTSYSTEM_OT_GaussianBlur,
-        PAINTSYSTEM_OT_SharpenImage,
-        PAINTSYSTEM_OT_BrushPainter,
-    ])
-
-classes = tuple(classes)
+# 필터 오퍼레이터는 IMAGE_FILTERS_AVAILABLE일 때만 정의되므로
+# 별도 분기 없이 모듈에 실제로 존재하는 클래스만 잡힌다
+classes = collect_classes(sys.modules[__name__])
 register, unregister = register_classes_factory(classes)

@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # 3DPainter 포크 추가 기능: 2D 텍스처 뷰 패널
 
+import sys
+
 import bpy
 from bpy.types import Panel
 
 from ..operators.view2d_operators import get_canvas_object
+from ..utils.registration import collect_classes
 
 
 class MAT_PT_PaintSystem2DView(Panel):
@@ -70,8 +73,6 @@ class MAT_PT_PaintSystem2DView(Panel):
             )
 
 
-classes = (
-    MAT_PT_PaintSystem2DView,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = bpy.utils.register_classes_factory(classes)

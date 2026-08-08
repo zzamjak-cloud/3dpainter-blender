@@ -6,6 +6,8 @@
 # "선택 밖은 보호됨"이라는 포토샵과 유사한 시각 피드백이 된다.
 # v1은 2D 텍스처 뷰(Flat UV Mesh 캔버스) 전용.
 
+import sys
+
 import gpu
 import numpy as np
 from gpu_extras.batch import batch_for_shader
@@ -15,6 +17,7 @@ from bpy.types import Operator
 from bpy_extras import view3d_utils
 
 from .view2d_operators import get_canvas_object, get_source_object
+from ..utils.registration import collect_classes
 
 MASK_IMAGE_NAME = "PS Selection Mask"
 
@@ -1096,18 +1099,9 @@ class PS_ToolPolyLassoSelect(bpy.types.WorkSpaceTool):
     )
 
 
-classes = (
-    PAINTSYSTEM_OT_LassoSelect,
-    PAINTSYSTEM_OT_PolyLassoSelect,
-    PAINTSYSTEM_OT_ShapeSelect,
-    PAINTSYSTEM_OT_CycleShapeTool,
-    PAINTSYSTEM_OT_CycleLassoTool,
-    PAINTSYSTEM_OT_SetBrushTool,
-    PAINTSYSTEM_OT_FillSelection,
-    PAINTSYSTEM_OT_DeselectOnEmptyClick,
-    PAINTSYSTEM_OT_ClearSelection,
-    PAINTSYSTEM_OT_InvertSelection,
-)
+# WorkSpaceTool 서브클래스(PS_Tool*)는 등록 대상 타입이 아니므로 잡히지 않는다.
+# 툴 등록은 아래 _TOOLS_ORDER + register_tool이 따로 담당한다.
+classes = collect_classes(sys.modules[__name__])
 
 _register, _unregister = bpy.utils.register_classes_factory(classes)
 

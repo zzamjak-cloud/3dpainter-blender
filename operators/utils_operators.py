@@ -1,3 +1,5 @@
+import sys
+
 import addon_utils
 import bpy
 import gpu
@@ -7,6 +9,7 @@ from bpy.utils import register_classes_factory
 from bpy_extras.node_utils import connect_sockets
 
 from ..paintsystem.data import update_active_image
+from ..utils.registration import collect_classes
 
 # ---
 from ..preferences import addon_package
@@ -511,22 +514,6 @@ class PAINTSYSTEM_OT_FocusPSNode(PSContextMixin, Operator):
         
         return {'FINISHED'}
 
-classes = (
-    PAINTSYSTEM_OT_TogglePaintMode,
-    PAINTSYSTEM_OT_AddPresetBrushes,
-    PAINTSYSTEM_OT_SelectMaterialIndex,
-    PAINTSYSTEM_OT_NewMaterial,
-    PAINTSYSTEM_OT_IsolateChannel,
-    PAINTSYSTEM_OT_ToggleBrushEraseAlpha,
-    PAINTSYSTEM_OT_ColorSample,
-    PAINTSYSTEM_OT_OpenPaintSystemPreferences,
-    PAINTSYSTEM_OT_FlipNormals,
-    PAINTSYSTEM_OT_RecalculateNormals,
-    PAINTSYSTEM_OT_HidePaintingTips,
-    PAINTSYSTEM_OT_DuplicatePaintSystemData,
-    PAINTSYSTEM_OT_ToggleTransformGizmos,
-    PAINTSYSTEM_OT_ToggleImageEditor,
-    PAINTSYSTEM_OT_FocusPSNode,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)

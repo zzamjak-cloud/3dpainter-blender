@@ -3,9 +3,11 @@ from bpy.props import EnumProperty, StringProperty
 from bpy.types import Context, Operator
 from bpy.utils import register_classes_factory
 import os
+import sys
 
 
 from ..custom_icons import get_icon, get_image_editor_icon
+from ..utils.registration import collect_classes
 
 from ..paintsystem.data import EDIT_EXTERNAL_MODE_ENUM
 from ..paintsystem.image import save_image
@@ -331,11 +333,6 @@ class PAINTSYSTEM_OT_ReloadImage(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-classes = (
-    PAINTSYSTEM_OT_ProjectEdit,
-    PAINTSYSTEM_OT_ProjectApply,
-    PAINTSYSTEM_OT_QuickEdit,
-    PAINTSYSTEM_OT_ReloadImage,
-)
+classes = collect_classes(sys.modules[__name__])
 
 register, unregister = register_classes_factory(classes)
