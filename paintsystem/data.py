@@ -296,10 +296,19 @@ def update_active_group(self, context):
 
 def find_channels_containing_layer(check_layer: "Layer") -> list["Channel"]:
     """Find all channels that reference *check_layer* (directly or via link)."""
+    # 링크 레이어는 다른 머티리얼에서 uid로 참조하므로 스캔 범위를 소유 머티리얼로 줄일 수 없다
     channels = []
+    seen = set()
+    check_uid = check_layer.uid
     for _mat, _grp, channel, layer in iter_all_layers():
-        if layer == check_layer or layer.linked_layer_uid == check_layer.uid:
-            channels.append(channel)
+        # uid가 비어 있으면 링크되지 않은 레이어 전부와 매칭되므로 직접 참조만 본다
+        if layer != check_layer and not (check_uid and layer.linked_layer_uid == check_uid):
+            continue
+        ch_id = channel.as_pointer()
+        if ch_id in seen:
+            continue
+        seen.add(ch_id)
+        channels.append(channel)
     return channels
 
 def get_node_from_nodetree(node_tree: NodeTree, identifier: str) -> Node | None:
@@ -1446,14 +1455,17 @@ class Layer(BaseNestedListItem):
             if marker_name is None:
                 raise ValueError("Marker name is required")
             action.marker_name = marker_name
+        invalidate_action_layer_cache()
         return action
-    
+
     def remove_action(self, index: int):
         self.actions.remove(index)
-    
+        invalidate_action_layer_cache()
+
     def remove_active_action(self):
         self.actions.remove(self.active_action_index)
         self.active_action_index = min(self.active_action_index, len(self.actions) - 1)
+        invalidate_action_layer_cache()
     
     @property
     def uses_coord_type(self) -> bool:
@@ -2654,12 +2666,14 @@ class Group(PropertyGroup):
         if not self.node_tree:
             return
         node_tree = self.node_tree
-        mat = None
-        # Get the material that contains this group
-        for material in bpy.data.materials:
-            if material.ps_mat_data and material.ps_mat_data.groups:
-                for group in material.ps_mat_data.groups:
-                    if group.node_tree == node_tree:
+        # Group은 Material.ps_mat_data 아래 중첩 PropertyGroup이므로 id_data가 소유 머티리얼이다
+        owner = self.id_data
+        mat = owner if isinstance(owner, Material) else None
+        if mat is None:
+            # 소유자를 못 얻는 예외적 상황에서만 전체 머티리얼을 뒤진다
+            for material in bpy.data.materials:
+                if material.ps_mat_data and material.ps_mat_data.groups:
+                    if any(group.node_tree == node_tree for group in material.ps_mat_data.groups):
                         mat = material
                         break
         if mat:
@@ -3105,6 +3119,42 @@ def iter_all_layers() -> Generator[tuple[Material, Group, Channel, Layer], None,
 def get_all_layers() -> list[Layer]:
     """Return a flat list of every layer across all materials."""
     return [layer for _mat, _grp, _ch, layer in iter_all_layers()]
+
+
+# 액션이 달린 레이어 캐시 — frame_change_pre가 매 프레임 파일 전체를 순회하는 것을 막는다
+_action_layers_cache: Optional[list[tuple['Layer', str]]] = None
+_action_layers_cache_uses: int = 0
+# 레이어 복제처럼 무효화가 걸리지 않는 경로가 있어 사용 횟수 상한을 둔다
+_ACTION_LAYERS_CACHE_MAX_USES = 60
+
+
+def invalidate_action_layer_cache():
+    """액션 목록·레이어 구성이 바뀌었을 때 캐시를 버린다."""
+    global _action_layers_cache, _action_layers_cache_uses
+    _action_layers_cache = None
+    _action_layers_cache_uses = 0
+
+
+def get_action_layers() -> list[Layer]:
+    """액션이 하나 이상 등록된 레이어만 반환한다.
+
+    캐시에 담긴 RNA 포인터는 삭제·언두로 죽거나 다른 레이어를 가리킬 수 있으므로,
+    uid 재확인에 실패하면 전체를 다시 스캔한다.
+    """
+    global _action_layers_cache, _action_layers_cache_uses
+    if _action_layers_cache is not None and _action_layers_cache_uses < _ACTION_LAYERS_CACHE_MAX_USES:
+        try:
+            if all(layer.uid == uid and len(layer.actions) > 0
+                   for layer, uid in _action_layers_cache):
+                _action_layers_cache_uses += 1
+                return [layer for layer, _uid in _action_layers_cache]
+        except ReferenceError:
+            pass
+
+    _action_layers_cache = [(layer, layer.uid) for _mat, _grp, _ch, layer
+                            in iter_all_layers() if len(layer.actions) > 0]
+    _action_layers_cache_uses = 0
+    return [layer for layer, _uid in _action_layers_cache]
 
 def build_layer_link_counter() -> Counter:
     """파일 전체 레이어의 uid 참조 횟수를 센다.

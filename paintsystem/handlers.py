@@ -2,7 +2,7 @@ import bpy
 
 from .versioning import get_layer_parent_map, migrate_global_layer_data, migrate_blend_mode, migrate_source_node, migrate_socket_names, update_layer_name, update_layer_version, update_library_nodetree_version
 from .context import parse_context
-from .data import sort_actions, get_all_layers, is_valid_uuidv4, iter_all_layers, _invalidate_material_layer_cache
+from .data import sort_actions, get_action_layers, invalidate_action_layer_cache, is_valid_uuidv4, iter_all_layers, _invalidate_material_layer_cache
 from .image import save_image
 from .graph.basic_layers import get_layer_version_for_type
 import time
@@ -38,7 +38,8 @@ def frame_change_pre(scene: bpy.types.Scene):
     if not ps_scene_data:
         return
     update_task = {}
-    for layer in get_all_layers():
+    # 매 프레임 전체 레이어를 도는 대신 액션이 달린 레이어만 본다
+    for layer in get_action_layers():
         sorted_actions = sort_actions(bpy.context, layer)
         for action in sorted_actions:
             match action.action_bind:
@@ -109,6 +110,7 @@ def load_paint_system_data():
 def load_post(scene):
     # 이전 파일의 Material 포인터가 캐시에 남아 있으면 죽은 RNA를 참조하게 된다
     _invalidate_material_layer_cache()
+    invalidate_action_layer_cache()
     ps_scene_data = get_ps_scene_data(bpy.context.scene)
     if not ps_scene_data:
         return
@@ -119,6 +121,7 @@ def load_post(scene):
 def undo_redo_post(scene):
     # 언두/리두는 데이터를 통째로 되돌려 캐시에 담긴 Layer 포인터를 무효화시킨다
     _invalidate_material_layer_cache()
+    invalidate_action_layer_cache()
 
 
 @bpy.app.handlers.persistent
