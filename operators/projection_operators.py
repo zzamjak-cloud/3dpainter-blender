@@ -27,6 +27,39 @@ from ..paintsystem.image import read_rgba, write_rgba
 from ..utils.imaging import bilinear_resize
 from ..utils.registration import collect_classes
 
+_PROJ_TEMP_NAME = "PS Projection Temp"
+_PROJ_TEMP_ALPHA_NAME = "PS Projection Temp Alpha"
+_PROJ_SCRATCH_NAME = "PS Projection Scratch"
+_PROJ_CAM_NAME = "PS Proj Cam"
+
+
+def _ensure_scratch_image(name: str, width: int, height: int):
+    """고정 이름 임시 이미지를 재사용한다. 크기가 바뀌면 재생성한다."""
+    img = bpy.data.images.get(name)
+    if img is None or int(img.size[0]) != width or int(img.size[1]) != height:
+        if img is not None:
+            bpy.data.images.remove(img)
+        img = bpy.data.images.new(name, width=width, height=height, alpha=True)
+    return img
+
+
+def _ensure_proj_camera(context):
+    """숨은 투사 카메라를 재사용한다. (cam_obj, cam_data) 튜플을 돌려준다."""
+    cam_obj = bpy.data.objects.get(_PROJ_CAM_NAME)
+    if cam_obj is not None and cam_obj.type == 'CAMERA':
+        cam_data = cam_obj.data
+    else:
+        if cam_obj is not None:
+            bpy.data.objects.remove(cam_obj, do_unlink=True)
+        cam_data = bpy.data.cameras.get(_PROJ_CAM_NAME)
+        if cam_data is None:
+            cam_data = bpy.data.cameras.new(_PROJ_CAM_NAME)
+        cam_obj = bpy.data.objects.new(_PROJ_CAM_NAME, cam_data)
+        context.collection.objects.link(cam_obj)
+    cam_obj.hide_viewport = True
+    cam_obj.hide_render = True
+    return cam_obj, cam_data
+
 
 class PSProjectionTexItem(PropertyGroup):
     name: StringProperty(name="Name")
@@ -372,13 +405,12 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
         alpha_np[:, :, 2] = alpha_ch
         alpha_np[:, :, 3] = 1.0
 
-        temp = bpy.data.images.new(
-            "PS Projection Temp", width=rw, height=rh, alpha=True)
+        temp = _ensure_scratch_image(_PROJ_TEMP_NAME, rw, rh)
         write_rgba(temp, rgb_np, tag=False)
-        temp_alpha = bpy.data.images.new(
-            "PS Projection Temp Alpha", width=rw, height=rh, alpha=True)
+        temp_alpha = _ensure_scratch_image(_PROJ_TEMP_ALPHA_NAME, rw, rh)
         write_rgba(temp_alpha, alpha_np, tag=False)
 
+        layer_img = None
         try:
             # 2. 신규 레이어 생성 (현재 캔버스 해상도)
             ps_ctx = self.parse_context(context)
@@ -389,33 +421,36 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
             lh = int(base.size[1]) if base is not None and base.size[1] else 2048
             layer_img = bpy.data.images.new(
                 f"Projection {self._item.name}", width=lw, height=lh, alpha=True)
-            coord_type, uv_map_name = channel_coord_settings(context, channel)
-            channel.create_layer(
-                context, layer_name=f"Projection {self._item.name}",
-                layer_type='IMAGE', image=layer_img, insert_at='TOP',
-                coord_type=coord_type, uv_map_name=uv_map_name)
+            try:
+                coord_type, uv_map_name = channel_coord_settings(context, channel)
+                channel.create_layer(
+                    context, layer_name=f"Projection {self._item.name}",
+                    layer_type='IMAGE', image=layer_img, insert_at='TOP',
+                    coord_type=coord_type, uv_map_name=uv_map_name)
+            except Exception:
+                # 레이어 등록 실패 시 고아 이미지 제거
+                bpy.data.images.remove(layer_img)
+                layer_img = None
+                raise
             # 3. 네이티브 투사 — project_image는 씬 카메라 기준이므로
             # 현재 뷰포트와 일치하는 임시 카메라를 만들어 RGB/알파를 각각 투사
-            scratch = bpy.data.images.new(
-                "PS Projection Scratch", width=lw, height=lh, alpha=True)
-            try:
-                self._project_from_view(
-                    context, [(layer_img, temp), (scratch, temp_alpha)], rw, rh)
+            scratch = _ensure_scratch_image(_PROJ_SCRATCH_NAME, lw, lh)
+            self._project_from_view(
+                context, [(layer_img, temp), (scratch, temp_alpha)], rw, rh)
 
-                # 4. 알파 결합: 투사된 알파(스크래치의 R)를 레이어 알파로
-                lb = read_rgba(layer_img)
-                sb = read_rgba(scratch)
-                lb[:, :, 3] = sb[:, :, 0]
-                write_rgba(layer_img, lb)
-            finally:
-                bpy.data.images.remove(scratch)
+            # 4. 알파 결합: 투사된 알파(스크래치의 R)를 레이어 알파로
+            lb = read_rgba(layer_img)
+            sb = read_rgba(scratch)
+            lb[:, :, 3] = sb[:, :, 0]
+            write_rgba(layer_img, lb)
 
             ip.canvas = layer_img
             from .view2d_operators import ensure_composite_shading
             ensure_composite_shading(context)
-        finally:
-            bpy.data.images.remove(temp)
-            bpy.data.images.remove(temp_alpha)
+        except Exception:
+            if layer_img is not None and layer_img.users == 0:
+                bpy.data.images.remove(layer_img)
+            raise
 
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
@@ -433,9 +468,12 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
         rv3d = context.region.data
         wm = rv3d.window_matrix
 
-        cam_data = bpy.data.cameras.new("PS Proj Cam")
-        cam_obj = bpy.data.objects.new("PS Proj Cam", cam_data)
-        context.collection.objects.link(cam_obj)
+        cam_obj, cam_data = _ensure_proj_camera(context)
+        if cam_obj.name not in context.collection.objects:
+            try:
+                context.collection.objects.link(cam_obj)
+            except RuntimeError:
+                pass
         cam_obj.matrix_world = rv3d.view_matrix.inverted()
         cam_data.sensor_fit = 'HORIZONTAL'
         if rv3d.view_perspective == 'ORTHO':
@@ -465,8 +503,6 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
             render.resolution_x = prev[1]
             render.resolution_y = prev[2]
             render.resolution_percentage = prev[3]
-            bpy.data.objects.remove(cam_obj)
-            bpy.data.cameras.remove(cam_data)
 
 
 def _autoreload_timer():
