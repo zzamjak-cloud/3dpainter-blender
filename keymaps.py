@@ -61,14 +61,17 @@ def register() -> None:
             )
 
         # 3DPainter 포크: Alt+클릭 스포이드 (포토샵식 — 합성 결과에서 색 추출)
+        # 래퍼 오퍼레이터 안에서 모달을 중첩 호출하면 릴리스 이벤트를 놓쳐
+        # 모달이 갇힐 수 있으므로 네이티브 오퍼레이터에 직접 바인딩한다
         if ENABLE_ALT_CLICK_EYEDROPPER:
             _add_keymap_entry(
                 kc,
                 name=km_name,
                 space_type=space,
-                idname='paint_system.color_sample',
+                idname='paint.sample_color',
                 key='LEFTMOUSE',
                 alt=True,
+                properties={'merged': True, 'palette': False},
             )
 
         # 3DPainter 포크: 2D/3D 뷰 클릭 시 페인팅 대상 자동 전환 (이벤트 통과)
