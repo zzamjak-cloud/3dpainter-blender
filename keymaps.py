@@ -63,6 +63,19 @@ def register() -> None:
                 shift=True,
             )
 
+        # 3DPainter 포크: Alt를 누르는 동안 스포이드 커서 유지
+        # (ALT 키 PRESS 이벤트 자체가 alt 플래그를 가질 수 있어 양쪽 등록)
+        for _alt_key in ('LEFT_ALT', 'RIGHT_ALT'):
+            for _alt_flag in (False, True):
+                _add_keymap_entry(
+                    kc,
+                    name=km_name,
+                    space_type=space,
+                    idname='paint_system.eyedropper_cursor',
+                    key=_alt_key,
+                    alt=_alt_flag,
+                )
+
         # 3DPainter 포크: Alt+클릭 스포이드 (포토샵식 — 합성 결과에서 색 추출)
         # 래퍼 오퍼레이터 안에서 모달을 중첩 호출하면 릴리스 이벤트를 놓쳐
         # 모달이 갇힐 수 있으므로 네이티브 오퍼레이터에 직접 바인딩한다

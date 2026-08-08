@@ -152,9 +152,39 @@ class PAINTSYSTEM_OT_LineStroke(Operator):
         return {'FINISHED'}
 
 
+class PAINTSYSTEM_OT_EyedropperCursor(Operator):
+    """Alt를 누르고 있는 동안 스포이드 커서를 표시한다 (포토샵과 동일).
+    이벤트는 전부 통과시키므로 Alt+클릭 샘플링은 그대로 동작한다"""
+    bl_idname = "paint_system.eyedropper_cursor"
+    bl_label = "Eyedropper Cursor"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'PAINT_TEXTURE'
+
+    def invoke(self, context, event):
+        context.window.cursor_modal_set('EYEDROPPER')
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'WINDOW_DEACTIVATE':
+            context.window.cursor_modal_restore()
+            return {'FINISHED'}
+        # ALT 키 자체의 반복 PRESS는 유지, 그 외 alt가 풀린 이벤트면 종료
+        if not event.alt and not (
+            event.type in {'LEFT_ALT', 'RIGHT_ALT'} and event.value == 'PRESS'
+        ):
+            context.window.cursor_modal_restore()
+            return {'FINISHED'}
+        return {'PASS_THROUGH'}
+
+
 classes = (
     PAINTSYSTEM_OT_RecordStrokeAnchor,
     PAINTSYSTEM_OT_LineStroke,
+    PAINTSYSTEM_OT_EyedropperCursor,
 )
 
 register, unregister = bpy.utils.register_classes_factory(classes)
