@@ -14,7 +14,8 @@ import bpy
 from bpy.types import Operator
 
 from .common import PSContextMixin
-from .projection_operators import _bilinear_resize_rgba
+from ..paintsystem.image import read_rgba, write_rgba
+from ..utils.imaging import bilinear_resize
 from ..utils.registration import collect_classes
 
 
@@ -50,13 +51,6 @@ _SUPPORTED_BLENDS = {
     'MIX', 'MULTIPLY', 'SCREEN', 'OVERLAY', 'ADD', 'SUBTRACT',
     'DIFFERENCE', 'DARKEN', 'LIGHTEN', 'DIVIDE', 'SOFT_LIGHT',
 }
-
-
-def _image_np(img) -> np.ndarray:
-    w, h = int(img.size[0]), int(img.size[1])
-    buf = np.empty(w * h * 4, dtype=np.float32)
-    img.pixels.foreach_get(buf)
-    return buf.reshape(h, w, 4)
 
 
 class PAINTSYSTEM_OT_QuickMergeDown(PSContextMixin, Operator):
@@ -119,11 +113,11 @@ class PAINTSYSTEM_OT_QuickMergeDown(PSContextMixin, Operator):
         if bw == 0 or bh == 0 or tw == 0 or th == 0:
             return self._fallback(context)
 
-        bottom_np = _image_np(below.image)
-        top_np = _image_np(top.image)
+        bottom_np = read_rgba(below.image)
+        top_np = read_rgba(top.image)
         if (th, tw) != (bh, bw):
             # 아래 레이어 해상도 기준으로 통일 (PSD와 동일한 규칙)
-            top_np = _bilinear_resize_rgba(top_np, bw, bh)
+            top_np = bilinear_resize(top_np, bh, bw)
 
         cb = bottom_np[:, :, :3]
         ct = top_np[:, :, :3]
@@ -146,10 +140,7 @@ class PAINTSYSTEM_OT_QuickMergeDown(PSContextMixin, Operator):
         result[:, :, :3] = premult / safe
         result[:, :, 3] = out_a
 
-        below.image.pixels.foreach_set(result.ravel())
-        below.image.update()
-        if hasattr(below.image, 'update_tag'):
-            below.image.update_tag()
+        write_rgba(below.image, result)
 
         # 위 레이어 제거 → 아래 레이어가 병합 결과를 갖고 살아남는다 (PS와 동일)
         channel.delete_layer(context, top)

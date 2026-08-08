@@ -7,6 +7,7 @@
 # v1은 2D 텍스처 뷰(Flat UV Mesh 캔버스) 전용.
 
 import sys
+import math
 
 import gpu
 import numpy as np
@@ -16,7 +17,9 @@ import bpy
 from bpy.types import Operator
 from bpy_extras import view3d_utils
 
+from .common import ModalDrawMixin
 from .view2d_operators import get_canvas_object, get_source_object
+from ..paintsystem.image import read_rgba, write_rgba
 from ..utils.registration import collect_classes
 
 MASK_IMAGE_NAME = "PS Selection Mask"
@@ -426,13 +429,6 @@ def _box3(m: np.ndarray) -> np.ndarray:
     ) / 9.0
 
 
-def _get_mask_pixels(img) -> np.ndarray:
-    w, h = int(img.size[0]), int(img.size[1])
-    buf = np.empty(w * h * 4, dtype=np.float32)
-    img.pixels.foreach_get(buf)
-    return buf.reshape(h, w, 4)
-
-
 def _set_masked_map(img, masked: np.ndarray) -> None:
     """차단 맵(1=차단)을 RGB와 알파에 동일하게 기록한다.
 
@@ -444,8 +440,7 @@ def _set_masked_map(img, masked: np.ndarray) -> None:
     rgba[:, :, 1] = masked
     rgba[:, :, 2] = masked
     rgba[:, :, 3] = masked
-    img.pixels.foreach_set(rgba.ravel())
-    img.update()
+    write_rgba(img, rgba)
 
 
 def _ensure_mask_image(width: int, height: int):
@@ -499,7 +494,7 @@ def _commit_selection(op, context, region, screen_points, mode):
     mask_img = _ensure_mask_image(w, h)
     ip = context.tool_settings.image_paint
     if ip.use_stencil_layer and ip.stencil_image == mask_img:
-        prev_masked = _get_mask_pixels(mask_img)[:, :, 0]
+        prev_masked = read_rgba(mask_img)[:, :, 0]
     else:
         prev_masked = np.ones((h, w), dtype=np.float32)  # 선택 없음 = 전면 차단
 
@@ -542,7 +537,7 @@ def _commit_selection(op, context, region, screen_points, mode):
     return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_LassoSelect(Operator):
+class PAINTSYSTEM_OT_LassoSelect(ModalDrawMixin, Operator):
     """자유곡선 라쏘 선택 — 2D 캔버스·3D 뷰 모두 지원 (+Alt: 선택에서 제외)"""
     bl_idname = "paint_system.lasso_select"
     bl_label = "Lasso Select"
@@ -563,8 +558,7 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
         self._points = [(event.mouse_region_x, event.mouse_region_y)]
         # 트리거 콤보에 Ctrl/Shift가 포함되므로 Alt만 합성 모드 판정에 사용
         self._mode = 'SUBTRACT' if event.alt else 'REPLACE'
-        self._handle = bpy.types.SpaceView3D.draw_handler_add(
-            self._draw, (context,), 'WINDOW', 'POST_PIXEL')
+        self._add_view3d_draw_handler(self._draw, (context,))
         context.window_manager.modal_handler_add(self)
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
@@ -577,10 +571,10 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type in {'LEFTMOUSE'} and event.value == 'RELEASE':
-            self._finish_draw(context)
+            self._finish_modal_draw(context)
             return self._commit(context)
         if event.type in {'RIGHTMOUSE', 'ESC'}:
-            self._finish_draw(context)
+            self._finish_modal_draw(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
 
@@ -596,24 +590,12 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
         color = (1.0, 0.4, 0.4, 0.9) if self._mode == 'SUBTRACT' else (1.0, 1.0, 1.0, 0.9)
         _draw_polyline(region, coords, color)
 
-    def _finish_draw(self, context):
-        if self._handle is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
-            self._handle = None
-        # 외부 중단(파일 로드 등)으로 호출되면 area가 없을 수 있다
-        if context.area:
-            context.area.tag_redraw()
-
-    def cancel(self, context):
-        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
-        self._finish_draw(context)
-
     def _commit(self, context):
         return _commit_selection(
             self, context, context.region, self._points, self._mode)
 
 
-class PAINTSYSTEM_OT_PolyLassoSelect(Operator):
+class PAINTSYSTEM_OT_PolyLassoSelect(ModalDrawMixin, Operator):
     """다각형 라쏘 선택 — 클릭으로 꼭짓점 추가, 시작점 클릭/Enter로 닫기,
     Backspace로 마지막 점 취소, ESC/우클릭 취소 (+Alt 시작: 선택에서 제외)"""
     bl_idname = "paint_system.poly_lasso_select"
@@ -638,14 +620,12 @@ class PAINTSYSTEM_OT_PolyLassoSelect(Operator):
         self._points = [pt]
         self._preview = pt
         self._mode = 'SUBTRACT' if event.alt else 'REPLACE'
-        self._handle = bpy.types.SpaceView3D.draw_handler_add(
-            self._draw, (context,), 'WINDOW', 'POST_PIXEL')
+        self._add_view3d_draw_handler(self._draw, (context,))
         context.window_manager.modal_handler_add(self)
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
-        import math
         if event.type == 'MOUSEMOVE':
             self._preview = (float(event.mouse_region_x), float(event.mouse_region_y))
             context.area.tag_redraw()
@@ -658,14 +638,14 @@ class PAINTSYSTEM_OT_PolyLassoSelect(Operator):
                 and math.hypot(pt[0] - first[0], pt[1] - first[1]) <= self.CLOSE_RADIUS
             )
             if near_start:
-                self._finish_draw(context)
+                self._finish_modal_draw(context)
                 return _commit_selection(
                     self, context, context.region, self._points, self._mode)
             self._points.append(pt)
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
-            self._finish_draw(context)
+            self._finish_modal_draw(context)
             return _commit_selection(
                 self, context, context.region, self._points, self._mode)
         if event.type == 'BACK_SPACE' and event.value == 'PRESS':
@@ -674,7 +654,7 @@ class PAINTSYSTEM_OT_PolyLassoSelect(Operator):
                 context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type in {'RIGHTMOUSE', 'ESC'}:
-            self._finish_draw(context)
+            self._finish_modal_draw(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
 
@@ -698,18 +678,6 @@ class PAINTSYSTEM_OT_PolyLassoSelect(Operator):
             (first[0] - r, first[1] - r, 0.0),
         ]
         _draw_polyline(region, square, (1.0, 1.0, 1.0, 0.4))
-
-    def _finish_draw(self, context):
-        if self._handle is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
-            self._handle = None
-        # 외부 중단(파일 로드 등)으로 호출되면 area가 없을 수 있다
-        if context.area:
-            context.area.tag_redraw()
-
-    def cancel(self, context):
-        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
-        self._finish_draw(context)
 
 
 class PAINTSYSTEM_OT_FillSelection(Operator):
@@ -758,16 +726,14 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
         if ip.use_stencil_layer and ip.stencil_image is not None:
             mask_img = ip.stencil_image
             mh, mw = int(mask_img.size[1]), int(mask_img.size[0])
-            masked = _get_mask_pixels(mask_img)[:, :, 0]
+            masked = read_rgba(mask_img)[:, :, 0]
             if (mh, mw) != (h, w):  # 최근접 리샘플
                 ys = (np.arange(h) * mh // h).clip(0, mh - 1)
                 xs = (np.arange(w) * mw // w).clip(0, mw - 1)
                 masked = masked[np.ix_(ys, xs)]
             selected = np.clip(1.0 - masked, 0.0, 1.0)
 
-        buf = np.empty(w * h * 4, dtype=np.float32)
-        img.pixels.foreach_get(buf)
-        rgba = buf.reshape(h, w, 4)
+        rgba = read_rgba(img)
         fill = np.array([fill_rgb.r, fill_rgb.g, fill_rgb.b, 1.0], dtype=np.float32)
         if selected is None:
             rgba[:, :, :] = fill
@@ -781,12 +747,7 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
                     fill[c] * a + rgba[:, :, c] * src_a * (1.0 - a)
                 ) / safe
             rgba[:, :, 3] = out_a
-        img.pixels.foreach_set(rgba.ravel())
-        img.update()
-        # 뎁스그래프에 변경을 통지해야 EEVEE가 GPU 텍스처를 재업로드한다
-        # (없으면 다음 뎁스그래프 자극 때까지 2D/3D 뷰 갱신이 밀린다)
-        if hasattr(img, 'update_tag'):
-            img.update_tag()
+        write_rgba(img, rgba)
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
@@ -862,12 +823,12 @@ class PAINTSYSTEM_OT_InvertSelection(Operator):
 
     def execute(self, context):
         img = context.tool_settings.image_paint.stencil_image
-        masked = _get_mask_pixels(img)[:, :, 0]
+        masked = read_rgba(img)[:, :, 0]
         _set_masked_map(img, 1.0 - masked)
         return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_ShapeSelect(Operator):
+class PAINTSYSTEM_OT_ShapeSelect(ModalDrawMixin, Operator):
     """사각형/원형 선택 — 드래그로 영역 지정, Shift=정비율, Alt 시작=선택에서 제외"""
     bl_idname = "paint_system.shape_select"
     bl_label = "Shape Select"
@@ -894,8 +855,7 @@ class PAINTSYSTEM_OT_ShapeSelect(Operator):
         self._cur = self._start
         self._constrain = False
         self._mode = 'SUBTRACT' if event.alt else 'REPLACE'
-        self._handle = bpy.types.SpaceView3D.draw_handler_add(
-            self._draw, (context,), 'WINDOW', 'POST_PIXEL')
+        self._add_view3d_draw_handler(self._draw, (context,))
         context.window_manager.modal_handler_add(self)
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
@@ -907,16 +867,15 @@ class PAINTSYSTEM_OT_ShapeSelect(Operator):
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
-            self._finish_draw(context)
+            self._finish_modal_draw(context)
             return _commit_selection(
                 self, context, context.region, self._polygon(), self._mode)
         if event.type in {'RIGHTMOUSE', 'ESC'}:
-            self._finish_draw(context)
+            self._finish_modal_draw(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
 
     def _bounds(self):
-        import math
         x0, y0 = self._start
         x1, y1 = self._cur
         dx, dy = x1 - x0, y1 - y0
@@ -927,7 +886,6 @@ class PAINTSYSTEM_OT_ShapeSelect(Operator):
         return x0, y0, x0 + dx, y0 + dy
 
     def _polygon(self):
-        import math
         x0, y0, x1, y1 = self._bounds()
         if self.shape == 'RECT':
             return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
@@ -946,18 +904,6 @@ class PAINTSYSTEM_OT_ShapeSelect(Operator):
         coords = [(p[0], p[1], 0.0) for p in pts]
         coords.append(coords[0])
         _draw_polyline(region, coords, (1.0, 1.0, 1.0, 0.9))
-
-    def _finish_draw(self, context):
-        if self._handle is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
-            self._handle = None
-        # 외부 중단(파일 로드 등)으로 호출되면 area가 없을 수 있다
-        if context.area:
-            context.area.tag_redraw()
-
-    def cancel(self, context):
-        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
-        self._finish_draw(context)
 
 
 def _active_tool_id(context) -> str:

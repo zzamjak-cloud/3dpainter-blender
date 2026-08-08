@@ -11,7 +11,7 @@ from .common import (
     get_icon,
     blender_image_to_numpy
 )
-from ..paintsystem.image import set_image_pixels, ImageTiles
+from ..paintsystem.image import set_image_pixels, ImageTiles, write_rgba
 from .image_filters import list_brush_presets, resolve_brush_preset_path
 from ..paintsystem.graph.common import DEFAULT_PS_UV_MAP_NAME
 from ..utils.registration import collect_classes
@@ -127,12 +127,8 @@ class PAINTSYSTEM_OT_ClearImage(PSImageFilterMixin, Operator):
         image = self.get_image(context)
         if not image:
             return {'CANCELLED'}
-        # Replace every pixel with a transparent pixel
-        pixels = numpy.empty(len(image.pixels), dtype=numpy.float32)
-        pixels[::4] = 0.0
-        image.pixels.foreach_set(pixels)
-        image.update()
-        image.update_tag()
+        w, h = int(image.size[0]), int(image.size[1])
+        write_rgba(image, numpy.zeros((h, w, 4), dtype=numpy.float32))
         return {'FINISHED'}
     
 class PAINTSYSTEM_OT_FillImage(PSImageFilterMixin, Operator):
@@ -147,17 +143,13 @@ class PAINTSYSTEM_OT_FillImage(PSImageFilterMixin, Operator):
         image = self.get_image(context)
         if not image:
             return {'CANCELLED'}
-        # Replace every pixel with a transparent pixel
-        pixels = numpy.empty(len(image.pixels), dtype=numpy.float32)
-        # Fill the image with the current brush color
-        pixels[::4] = self.color[0]  # R
-        pixels[1::4] = self.color[1]  # G
-        pixels[2::4] = self.color[2]  # B
-        pixels[3::4] = self.color[3]  # A - full opacity
-        
-        image.pixels.foreach_set(pixels)
-        image.update()
-        image.update_tag()
+        w, h = int(image.size[0]), int(image.size[1])
+        fill = numpy.empty((h, w, 4), dtype=numpy.float32)
+        fill[:, :, 0] = self.color[0]
+        fill[:, :, 1] = self.color[1]
+        fill[:, :, 2] = self.color[2]
+        fill[:, :, 3] = self.color[3]
+        write_rgba(image, fill)
         return {'FINISHED'}
     
     def invoke(self, context, event):

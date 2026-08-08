@@ -32,7 +32,8 @@ from .common import (
     PSUVOptionsMixin,
     PSImageCreateMixin,
     redraw_panel,
-    intern_enum_items
+    intern_enum_items,
+    label_for,
     )
 
 def get_object_uv_maps(self, context: Context):
@@ -45,17 +46,84 @@ def ps_not_initialized(context: Context):
     ps_ctx = PSContextMixin.parse_context(context)
     return not (hasattr(context.active_object.active_material, "ps_mat_data") and ps_ctx.active_group and ps_ctx.active_channel)
 
-class PAINTSYSTEM_OT_NewImage(PSContextMixin, PSImageCreateMixin, MultiMaterialOperator):
-    """Create a new image layer"""
-    bl_idname = "paint_system.new_image_layer"
-    bl_label = "New Image Layer"
-    bl_options = {'REGISTER', 'UNDO'}
+class PSActiveChannelPoll:
+    """활성 채널이 있어야 실행 가능한 오퍼레이터 공용 poll."""
 
     @classmethod
     def poll(cls, context):
         ps_ctx = cls.parse_context(context)
         return ps_ctx.active_channel is not None
-    
+
+
+class PSActiveLayerPoll:
+    """활성 레이어가 있어야 실행 가능한 오퍼레이터 공용 poll."""
+
+    @classmethod
+    def poll(cls, context):
+        return cls.parse_context(context).active_layer is not None
+
+
+class PSNewLayerBase(PSActiveChannelPoll, PSContextMixin, MultiMaterialOperator):
+    """레이어 생성 오퍼레이터 공용 베이스.
+
+    서브클래스는 `layer_type`만 지정하면 되고, 이름·추가 인자가 필요하면
+    `get_layer_name` / `get_layer_kwargs`를, 생성 전후 처리가 필요하면
+    `before_create` / `after_create`를 오버라이드한다.
+    """
+
+    # 베이스 자신은 등록 대상이 아니다
+    _ps_skip_register = True
+
+    # create_layer에 넘길 레이어 타입 문자열
+    layer_type = ""
+
+    def get_layer_name(self, context):
+        return self.layer_name
+
+    def get_layer_kwargs(self, context):
+        return {}
+
+    def before_create(self, context):
+        pass
+
+    def after_create(self, context, layer):
+        pass
+
+    def process_material(self, context):
+        if ps_not_initialized(context):
+            return {'CANCELLED'}
+        self.before_create(context)
+        ps_ctx = self.parse_context(context)
+        layer = ps_ctx.active_channel.create_layer(
+            context,
+            self.get_layer_name(context),
+            self.layer_type,
+            **self.get_layer_kwargs(context),
+        )
+        self.after_create(context, layer)
+        return {'FINISHED'}
+
+
+class PSNewMaskBase(PSActiveLayerPoll, PSContextMixin, Operator):
+    """마스크 생성 오퍼레이터 공용 베이스. 서브클래스는 `mask_type`만 지정한다."""
+
+    # 베이스 자신은 등록 대상이 아니다
+    _ps_skip_register = True
+
+    mask_type = ""
+
+    def execute(self, context):
+        ps_ctx = self.parse_context(context)
+        ps_ctx.active_layer.create_mask(self.mask_type)
+        return {'FINISHED'}
+
+
+class PAINTSYSTEM_OT_NewImage(PSActiveChannelPoll, PSContextMixin, PSImageCreateMixin, MultiMaterialOperator):
+    """Create a new image layer"""
+    bl_idname = "paint_system.new_image_layer"
+    bl_label = "New Image Layer"
+    bl_options = {'REGISTER', 'UNDO'}
+
     image_name: StringProperty(
         name="Layer Name",
         description="Name of the new image layer",
@@ -157,16 +225,12 @@ class PAINTSYSTEM_OT_NewImage(PSContextMixin, PSImageCreateMixin, MultiMaterialO
         self.select_coord_type_ui(box, context)
 
 
-class PAINTSYSTEM_OT_NewFolder(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewFolder(PSNewLayerBase):
     """Create a new folder layer"""
     bl_idname = "paint_system.new_folder_layer"
     bl_label = "New Folder"
     bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
+    layer_type = "FOLDER"
 
     layer_name: StringProperty(
         name="Layer Name",
@@ -174,24 +238,13 @@ class PAINTSYSTEM_OT_NewFolder(PSContextMixin, MultiMaterialOperator):
         default="Folder"
     )
 
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_channel.create_layer(context, self.layer_name, "FOLDER")
-        return {'FINISHED'}
 
-
-class PAINTSYSTEM_OT_NewSolidColor(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewSolidColor(PSNewLayerBase):
     """Create a new solid color layer"""
     bl_idname = "paint_system.new_solid_color_layer"
     bl_label = "New Solid Color Layer"
     bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
+    layer_type = "SOLID_COLOR"
 
     layer_name: StringProperty(
         name="Layer Name",
@@ -199,25 +252,14 @@ class PAINTSYSTEM_OT_NewSolidColor(PSContextMixin, MultiMaterialOperator):
         default="Solid Color"
     )
 
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_channel.create_layer(context, self.layer_name, "SOLID_COLOR")
-        return {'FINISHED'}
 
-
-class PAINTSYSTEM_OT_NewAttribute(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewAttribute(PSNewLayerBase):
     """Create a new attribute layer"""
     bl_idname = "paint_system.new_attribute_layer"
     bl_label = "New Attribute Layer"
     bl_options = {'REGISTER', 'UNDO'}
+    layer_type = "ATTRIBUTE"
 
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
-    
     attribute_name: StringProperty(
         name="Attribute Name",
         description="Name of the attribute to use"
@@ -234,49 +276,32 @@ class PAINTSYSTEM_OT_NewAttribute(PSContextMixin, MultiMaterialOperator):
         default="Attribute"
     )
 
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_channel.create_layer(context, self.layer_name, "ATTRIBUTE")
-        return {'FINISHED'}
 
-
-class PAINTSYSTEM_OT_NewAdjustment(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewAdjustment(PSNewLayerBase):
     """Create a new adjustment layer"""
     bl_idname = "paint_system.new_adjustment_layer"
     bl_label = "New Adjustment Layer"
     bl_options = {'REGISTER', 'UNDO'}
+    layer_type = "ADJUSTMENT"
 
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
-    
     adjustment_type: EnumProperty(
         name="Adjustment Type",
         items=ADJUSTMENT_TYPE_ENUM,
     )
 
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        layer_name = next(name for adjustment_type, name, description in ADJUSTMENT_TYPE_ENUM if adjustment_type == self.adjustment_type)
-        ps_ctx.active_channel.create_layer(context, layer_name, "ADJUSTMENT", adjustment_type=self.adjustment_type)
-        return {'FINISHED'}
+    def get_layer_name(self, context):
+        return label_for(ADJUSTMENT_TYPE_ENUM, self.adjustment_type)
+
+    def get_layer_kwargs(self, context):
+        return {"adjustment_type": self.adjustment_type}
 
 
-class PAINTSYSTEM_OT_NewShader(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewShader(PSNewLayerBase):
     """Create a new shader layer"""
     bl_idname = "paint_system.new_shader_layer"
     bl_label = "New Shader Layer"
     bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
+    layer_type = "SHADER"
 
     layer_name: StringProperty(
         name="Layer Name",
@@ -284,79 +309,59 @@ class PAINTSYSTEM_OT_NewShader(PSContextMixin, MultiMaterialOperator):
         default="Shader"
     )
 
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_channel.create_layer(context, self.layer_name, "SHADER")
-        return {'FINISHED'}
 
-
-class PAINTSYSTEM_OT_NewGradient(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewGradient(PSNewLayerBase):
     """Create a new gradient layer"""
     bl_idname = "paint_system.new_gradient_layer"
     bl_label = "New Gradient Layer"
     bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
+    layer_type = "GRADIENT"
 
     layer_name: StringProperty(
         name="Layer Name",
         description="Name of the new gradient layer",
         default="Gradient"
     )
-    
+
     gradient_type: EnumProperty(
         name="Gradient Type",
         items=GRADIENT_TYPE_ENUM,
         default='LINEAR'
     )
 
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        layer = ps_ctx.active_channel.create_layer(context, self.gradient_type.title() if self.gradient_type != 'FAKE_LIGHT' else "Fake Light", "GRADIENT", gradient_type=self.gradient_type)
+    def get_layer_name(self, context):
+        return "Fake Light" if self.gradient_type == 'FAKE_LIGHT' else self.gradient_type.title()
+
+    def get_layer_kwargs(self, context):
+        return {"gradient_type": self.gradient_type}
+
+    def after_create(self, context, layer):
         if self.gradient_type == 'FAKE_LIGHT':
             layer.blend_mode = "MULTIPLY"
-        return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_NewGeometry(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewGeometry(PSNewLayerBase):
     """Create a new geometry layer"""
     bl_idname = "paint_system.new_geometry_layer"
     bl_label = "New Geometry Layer"
     bl_options = {'REGISTER', 'UNDO'}
-    
+    layer_type = "GEOMETRY"
+
     geometry_type: EnumProperty(
         name="Geometry Type",
         items=GEOMETRY_TYPE_ENUM,
         default='WORLD_NORMAL'
     )
 
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
-    
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        layer_name = next(name for geometry_type, name, description in GEOMETRY_TYPE_ENUM if geometry_type == self.geometry_type)
-        use_normalize_normal = active_channel.normalize_input if active_channel.type == 'VECTOR' else False
-        ps_ctx.active_channel.create_layer(
-            context,
-            layer_name,
-            layer_type="GEOMETRY",
-            geometry_type=self.geometry_type,
-            normalize_normal=use_normalize_normal
-        )
-        return {'FINISHED'}
+    def get_layer_name(self, context):
+        return label_for(GEOMETRY_TYPE_ENUM, self.geometry_type)
+
+    def get_layer_kwargs(self, context):
+        active_channel = self.parse_context(context).active_channel
+        return {
+            "geometry_type": self.geometry_type,
+            "normalize_normal": active_channel.normalize_input if active_channel.type == 'VECTOR' else False,
+        }
 
 
 class PAINTSYSTEM_OT_FixMissingGradientEmpty(PSContextMixin, Operator):
@@ -393,32 +398,21 @@ class PAINTSYSTEM_OT_SelectEmpty(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_NewRandomColor(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewRandomColor(PSNewLayerBase):
     """Create a new random color layer"""
     bl_idname = "paint_system.new_random_color_layer"
     bl_label = "New Random Color Layer"
     bl_options = {'REGISTER', 'UNDO'}
-    
+    layer_type = "RANDOM"
+
     layer_name: StringProperty(
         name="Layer Name",
         description="Name of the new random color layer",
         default="Random Color"
     )
-    
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
-    
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_channel.create_layer(context, self.layer_name, "RANDOM")
-        return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_NewCustomNodeGroup(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewCustomNodeGroup(PSActiveChannelPoll, PSContextMixin, MultiMaterialOperator):
     """Create a new custom node group layer"""
     bl_idname = "paint_system.new_custom_node_group_layer"
     bl_label = "New Custom Node Group Layer"
@@ -522,11 +516,6 @@ class PAINTSYSTEM_OT_NewCustomNodeGroup(PSContextMixin, MultiMaterialOperator):
         items=get_outputs_enum
     )
 
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
-    
     def process_material(self, context):
         if ps_not_initialized(context):
             return {'CANCELLED'}
@@ -591,48 +580,41 @@ class PAINTSYSTEM_OT_NewCustomNodeGroup(PSContextMixin, MultiMaterialOperator):
             box.prop(self, "alpha_output_name", text="Alpha")
 
 
-class PAINTSYSTEM_OT_NewTexture(PSContextMixin, PSUVOptionsMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_NewTexture(PSUVOptionsMixin, PSNewLayerBase):
     """Create a new texture layer"""
     bl_idname = "paint_system.new_texture_layer"
     bl_label = "New Texture Layer"
     bl_options = {'REGISTER', 'UNDO'}
+    layer_type = "TEXTURE"
 
     texture_type: EnumProperty(
         name="Texture Type",
         description="Type of texture to create",
         items=TEXTURE_TYPE_ENUM,
     )
-    
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
-    
+
     def invoke(self, context, event):
         self.get_coord_type(context)
         return context.window_manager.invoke_props_dialog(self)
-    
+
     def draw(self, context):
         layout = self.layout
         self.multiple_objects_ui(layout, context)
         box = layout.box()
         self.select_coord_type_ui(box, context, show_warning=False)
-    
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
+
+    def before_create(self, context):
         self.store_coord_type(context)
-        layer_name = next(name for texture_type, name, description in TEXTURE_TYPE_ENUM if texture_type == self.texture_type)
-        ps_ctx.active_channel.create_layer(
-            context,
-            layer_name=layer_name,
-            layer_type="TEXTURE",
-            texture_type=self.texture_type,
-            coord_type=self.coord_type,
-            uv_map_name=self.uv_map_name
-        )
-        return {'FINISHED'}
+
+    def get_layer_name(self, context):
+        return label_for(TEXTURE_TYPE_ENUM, self.texture_type)
+
+    def get_layer_kwargs(self, context):
+        return {
+            "texture_type": self.texture_type,
+            "coord_type": self.coord_type,
+            "uv_map_name": self.uv_map_name,
+        }
 
 
 class PAINTSYSTEM_OT_DeleteItem(PSContextMixin, MultiMaterialOperator):
@@ -671,12 +653,81 @@ class PAINTSYSTEM_OT_DeleteItem(PSContextMixin, MultiMaterialOperator):
             text="Click OK to delete, or cancel to keep the layer")
 
 
-class PAINTSYSTEM_OT_MoveUp(PSContextMixin, MultiMaterialOperator):
+class PSMoveLayerBase(PSContextMixin, MultiMaterialOperator):
+    """레이어 이동 오퍼레이터 공용 베이스. 서브클래스는 `direction`만 지정한다."""
+
+    # 베이스 자신은 등록 대상이 아니다
+    _ps_skip_register = True
+
+    # 'UP' 또는 'DOWN'
+    direction = 'UP'
+
+    @classmethod
+    def get_active_item(cls, context):
+        """(활성 채널, 활성 항목 id)를 돌려준다. 채널이 없으면 (None, None)."""
+        active_channel = cls.parse_context(context).active_channel
+        if not active_channel:
+            return None, None
+        return active_channel, active_channel.get_id_from_flattened_index(active_channel.active_index)
+
+    @classmethod
+    def poll(cls, context):
+        active_channel, item_id = cls.get_active_item(context)
+        if not active_channel:
+            return False
+        return bool(active_channel.get_movement_options(item_id, cls.direction))
+
+    def invoke(self, context, event):
+        active_channel, item_id = self.get_active_item(context)
+        if not active_channel:
+            return {'CANCELLED'}
+
+        options = active_channel.get_movement_options(item_id, self.direction)
+        if not options:
+            return {'CANCELLED'}
+
+        if len(options) == 1 and options[0][0] == 'SKIP':
+            self.action = 'SKIP'
+            return self.process_material(context)
+
+        context.window_manager.popup_menu(
+            self.draw_menu,
+            title="Move Options"
+        )
+        return {'FINISHED'}
+
+    def draw_menu(self, self_menu, context):
+        active_channel, item_id = self.get_active_item(context)
+        if not active_channel:
+            return {'CANCELLED'}
+
+        for op_id, label, props in active_channel.get_movement_menu_items(item_id, self.direction):
+            op = self_menu.layout.operator(op_id, text=label)
+            for key, value in props.items():
+                setattr(op, key, value)
+
+    def process_material(self, context):
+        if ps_not_initialized(context):
+            return {'CANCELLED'}
+        active_channel, item_id = self.get_active_item(context)
+        if not active_channel:
+            return {'CANCELLED'}
+
+        if active_channel.execute_movement(item_id, self.direction, self.action):
+            active_channel.update_node_tree(context)
+            redraw_panel(context)
+            return {'FINISHED'}
+
+        return {'CANCELLED'}
+
+
+class PAINTSYSTEM_OT_MoveUp(PSMoveLayerBase):
     """Move the active item up"""
     bl_idname = "paint_system.move_up"
     bl_label = "Move Item Up"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Move the active item up"
+    direction = 'UP'
 
     action: EnumProperty(
         items=[
@@ -687,76 +738,14 @@ class PAINTSYSTEM_OT_MoveUp(PSContextMixin, MultiMaterialOperator):
         ]
     )
 
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return False
-        item_id = active_channel.get_id_from_flattened_index(active_channel.active_index)
-        options = active_channel.get_movement_options(item_id, 'UP')
-        return bool(options)
 
-    def invoke(self, context, event):
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return {'CANCELLED'}
-
-        item_id = active_channel.get_id_from_flattened_index(
-            active_channel.active_index)
-
-        options = active_channel.get_movement_options(item_id, 'UP')
-        if not options:
-            return {'CANCELLED'}
-
-        if len(options) == 1 and options[0][0] == 'SKIP':
-            self.action = 'SKIP'
-            return self.process_material(context)
-
-        context.window_manager.popup_menu(
-            self.draw_menu,
-            title="Move Options"
-        )
-        return {'FINISHED'}
-
-    def draw_menu(self, self_menu, context):
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return {'CANCELLED'}
-        item_id = active_channel.get_id_from_flattened_index(
-            active_channel.active_index)
-
-        for op_id, label, props in active_channel.get_movement_menu_items(item_id, 'UP'):
-            op = self_menu.layout.operator(op_id, text=label)
-            for key, value in props.items():
-                setattr(op, key, value)
-
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return {'CANCELLED'}
-        item_id = active_channel.get_id_from_flattened_index(
-            active_channel.active_index)
-
-        if active_channel.execute_movement(item_id, 'UP', self.action):
-            active_channel.update_node_tree(context)
-            redraw_panel(context)
-            return {'FINISHED'}
-
-        return {'CANCELLED'}
-
-
-class PAINTSYSTEM_OT_MoveDown(PSContextMixin, MultiMaterialOperator):
+class PAINTSYSTEM_OT_MoveDown(PSMoveLayerBase):
     """Move the active item down"""
     bl_idname = "paint_system.move_down"
     bl_label = "Move Item Down"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Move the active item down"
+    direction = 'DOWN'
 
     action: EnumProperty(
         items=[
@@ -767,84 +756,14 @@ class PAINTSYSTEM_OT_MoveDown(PSContextMixin, MultiMaterialOperator):
         ]
     )
 
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return False
-        item_id = active_channel.get_id_from_flattened_index(active_channel.active_index)
-        options = active_channel.get_movement_options(item_id, 'DOWN')
-        return bool(options)
 
-    def invoke(self, context, event):
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return {'CANCELLED'}
-
-        item_id = active_channel.get_id_from_flattened_index(
-            active_channel.active_index)
-
-        options = active_channel.get_movement_options(item_id, 'DOWN')
-        if not options:
-            return {'CANCELLED'}
-
-        if len(options) == 1 and options[0][0] == 'SKIP':
-            self.action = 'SKIP'
-            return self.process_material(context)
-
-        context.window_manager.popup_menu(
-            self.draw_menu,
-            title="Move Options"
-        )
-        return {'FINISHED'}
-
-    def draw_menu(self, self_menu, context):
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return {'CANCELLED'}
-
-        item_id = active_channel.get_id_from_flattened_index(
-            active_channel.active_index)
-
-        for op_id, label, props in active_channel.get_movement_menu_items(item_id, 'DOWN'):
-            op = self_menu.layout.operator(op_id, text=label)
-            for key, value in props.items():
-                setattr(op, key, value)
-
-    def process_material(self, context):
-        if ps_not_initialized(context):
-            return {'CANCELLED'}
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        if not active_channel:
-            return {'CANCELLED'}
-
-        item_id = active_channel.get_id_from_flattened_index(
-            active_channel.active_index)
-
-        if active_channel.execute_movement(item_id, 'DOWN', self.action):
-            active_channel.update_node_tree(context)
-            redraw_panel(context)
-            return {'FINISHED'}
-
-        return {'CANCELLED'}
-
-
-class PAINTSYSTEM_OT_CopyLayer(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_CopyLayer(PSActiveLayerPoll, PSContextMixin, Operator):
     """Copy the active layer"""
     bl_idname = "paint_system.copy_layer"
     bl_label = "Copy Layer"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Copy the active layer"
-    
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_layer is not None
-    
+
     def execute(self, context):
         ps_ctx = self.parse_context(context)
         unlinked_layer = ps_ctx.unlinked_layer
@@ -856,18 +775,13 @@ class PAINTSYSTEM_OT_CopyLayer(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_CopyAllLayers(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_CopyAllLayers(PSActiveChannelPoll, PSContextMixin, Operator):
     """Copy all layers"""
     bl_idname = "paint_system.copy_all_layers"
     bl_label = "Copy All Layers"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Copy all layers"
-    
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_channel is not None
-    
+
     def execute(self, context):
         ps_ctx = self.parse_context(context)
         active_channel = ps_ctx.active_channel
@@ -928,18 +842,13 @@ class PAINTSYSTEM_OT_PasteLayer(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_UnlinkLayer(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_UnlinkLayer(PSActiveLayerPoll, PSContextMixin, Operator):
     """Unlink the active layer"""
     bl_idname = "paint_system.unlink_layer"
     bl_label = "Unlink Layer"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Unlink the active layer"
-    
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_layer is not None
-    
+
     def execute(self, context):
         ps_ctx = self.parse_context(context)
         unlinked_layer = ps_ctx.unlinked_layer
@@ -948,7 +857,7 @@ class PAINTSYSTEM_OT_UnlinkLayer(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_AddAction(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_AddAction(PSActiveLayerPoll, PSContextMixin, Operator):
     """Add an action to the active layer"""
     bl_idname = "paint_system.add_action"
     bl_label = "Add Action"
@@ -980,12 +889,7 @@ class PAINTSYSTEM_OT_AddAction(PSContextMixin, Operator):
         ps_ctx = self.parse_context(context)
         active_layer = ps_ctx.active_layer
         return get_next_unique_name("Action", [action.name for action in active_layer.actions])
-    
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_layer is not None
-    
+
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
@@ -1009,18 +913,13 @@ class PAINTSYSTEM_OT_AddAction(PSContextMixin, Operator):
         return context.window_manager.invoke_props_dialog(self)
 
 
-class PAINTSYSTEM_OT_DeleteAction(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_DeleteAction(PSActiveLayerPoll, PSContextMixin, Operator):
     """Delete the active action"""
     bl_idname = "paint_system.delete_action"
     bl_label = "Delete Action"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Delete the active action"
-    
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        return ps_ctx.active_layer is not None
-    
+
     def execute(self, context):
         ps_ctx = self.parse_context(context)
         ps_ctx.active_layer.remove_active_action()
@@ -1134,72 +1033,40 @@ class PAINTSYSTEM_OT_ProjectionViewReset(PSContextMixin, Operator):
 
 
 # Masks
-class PAINTSYSTEM_OT_NewValueMask(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_NewValueMask(PSNewMaskBase):
     """Create a new value mask"""
     bl_idname = "paint_system.new_value_mask"
     bl_label = "New Value Mask"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Create a new value mask"
-    
-    @classmethod
-    def poll(cls, context):
-        return cls.parse_context(context).active_layer is not None
-    
-    def execute(self, context):
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_layer.create_mask("VALUE")
-        return {'FINISHED'}
+    mask_type = "VALUE"
 
 
-class PAINTSYSTEM_OT_NewImageMask(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_NewImageMask(PSNewMaskBase):
     """Create a new image mask"""
     bl_idname = "paint_system.new_image_mask"
     bl_label = "New Image Mask"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Create a new image mask"
-    
-    @classmethod
-    def poll(cls, context):
-        return cls.parse_context(context).active_layer is not None
-    
-    def execute(self, context):
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_layer.create_mask("IMAGE")
-        return {'FINISHED'}
+    mask_type = "IMAGE"
 
 
-class PAINTSYSTEM_OT_NewAttributeMask(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_NewAttributeMask(PSNewMaskBase):
     """Create a new attribute mask"""
     bl_idname = "paint_system.new_attribute_mask"
     bl_label = "New Attribute Mask"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Create a new attribute mask"
-    
-    @classmethod
-    def poll(cls, context):
-        return cls.parse_context(context).active_layer is not None
-    
-    def execute(self, context):
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_layer.create_mask("ATTRIBUTE")
-        return {'FINISHED'}
+    mask_type = "ATTRIBUTE"
 
 
-class PAINTSYSTEM_OT_NewTextureMask(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_NewTextureMask(PSNewMaskBase):
     """Create a new texture mask"""
     bl_idname = "paint_system.new_texture_mask"
     bl_label = "New Texture Mask"
     bl_options = {'REGISTER', 'UNDO'}
     bl_description = "Create a new texture mask"
-    
-    @classmethod
-    def poll(cls, context):
-        return cls.parse_context(context).active_layer is not None
-    
-    def execute(self, context):
-        ps_ctx = self.parse_context(context)
-        ps_ctx.active_layer.create_mask("TEXTURE")
-        return {'FINISHED'}
+    mask_type = "TEXTURE"
 
 
 classes = collect_classes(sys.modules[__name__])

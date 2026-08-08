@@ -29,6 +29,16 @@ def scale_content(context, layout, scale_x=1.2, scale_y=1.2):
         layout.scale_y = scale_y
     return layout
 
+def label_for(enum_items, key, default=None):
+    """enum 항목 목록에서 `key`에 해당하는 표시 이름을 찾는다.
+    관용구 `next(name for k, name, _ in ENUM if k == key)`는 키가 없으면
+    StopIteration으로 오퍼레이터를 통째로 죽이므로 안전한 기본값으로 대체한다."""
+    for item in enum_items:
+        if item and item[0] == key:
+            return item[1]
+    return key if default is None else default
+
+
 def is_failed_result(result) -> bool:
     """process_material 반환값이 실패인지 판정한다.
     대부분 오퍼레이터 관용대로 set({'FINISHED'}/{'CANCELLED'})을 돌려주지만
@@ -36,6 +46,31 @@ def is_failed_result(result) -> bool:
     if isinstance(result, set):
         return 'FINISHED' not in result
     return not result
+
+
+class ModalDrawMixin:
+    """SpaceView3D draw handler 생명주기 공용. cancel()에서 누수를 막는다."""
+    _handle = None
+
+    def _add_view3d_draw_handler(self, callback, args=()):
+        self._handle = bpy.types.SpaceView3D.draw_handler_add(
+            callback, args, 'WINDOW', 'POST_PIXEL')
+        return self._handle
+
+    def _remove_view3d_draw_handler(self):
+        if self._handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+            self._handle = None
+
+    def _finish_modal_draw(self, context):
+        """핸들러 제거 + area redraw. 서브클래스가 헤더 정리 등을 덧붙일 수 있다."""
+        self._remove_view3d_draw_handler()
+        if context.area:
+            context.area.tag_redraw()
+
+    def cancel(self, context):
+        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
+        self._finish_modal_draw(context)
 
 
 class MultiMaterialOperator(Operator):

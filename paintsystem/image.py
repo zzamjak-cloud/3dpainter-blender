@@ -320,20 +320,56 @@ def delete_temp_image_files(image: Image):
         except OSError as e:
             logger.debug(f"Failed to delete temp file {abs_filepath}: {e}")
 
+def read_rgba(image: Image) -> np.ndarray:
+    """블렌더 이미지 → (H, W, 4) float32. 좌표는 블렌더 원점(하단 왼쪽, 플립 없음).
+
+    UDIM/필터용 `blender_image_to_numpy`와 달리 오퍼레이터 핫패스용이다.
+    채널 수가 4가 아니면 RGBA로 확장한다.
+    """
+    width, height = int(image.size[0]), int(image.size[1])
+    channels = image.channels
+    buf = np.empty(width * height * channels, dtype=np.float32)
+    image.pixels.foreach_get(buf)
+    arr = buf.reshape(height, width, channels)
+    if channels == 4:
+        return arr
+    if channels == 3:
+        return np.concatenate(
+            (arr, np.ones((height, width, 1), dtype=np.float32)), axis=2)
+    if channels == 1:
+        return np.repeat(arr, 4, axis=2)
+    out = np.ones((height, width, 4), dtype=np.float32)
+    n = min(channels, 4)
+    out[..., :n] = arr[..., :n]
+    return out
+
+
+def write_rgba(
+    image: Image,
+    array: np.ndarray,
+    *,
+    update: bool = True,
+    tag: bool = True,
+) -> None:
+    """(H, W, 4) float32 → 블렌더 이미지. 기본으로 update + update_tag를 호출한다.
+
+    tag=False는 임시 이미지처럼 GPU 재업로드가 필요 없을 때 쓴다.
+    """
+    flat = np.ascontiguousarray(array, dtype=np.float32).ravel()
+    image.pixels.foreach_set(flat)
+    if update:
+        image.update()
+    if tag and hasattr(image, "update_tag"):
+        image.update_tag()
+
+
 def switch_image_content(image1: Image, image2: Image):
     """Switch the contents of two images."""
     start_time = time.time()
-    # Use foreach_get for much faster pixel access
-    pixels_1 = np.empty(len(image1.pixels), dtype=np.float32)
-    pixels_2 = np.empty(len(image2.pixels), dtype=np.float32)
-    image1.pixels.foreach_get(pixels_1)
-    image2.pixels.foreach_get(pixels_2)
-    image1.pixels.foreach_set(pixels_2)
-    image2.pixels.foreach_set(pixels_1)
-    image1.update()
-    image1.update_tag()
-    image2.update()
-    image2.update_tag()
+    pixels_1 = read_rgba(image1)
+    pixels_2 = read_rgba(image2)
+    write_rgba(image1, pixels_2)
+    write_rgba(image2, pixels_1)
     end_time = time.time()
     logger.debug(f"Switch image content took {(end_time - start_time)*1000} milliseconds")
 

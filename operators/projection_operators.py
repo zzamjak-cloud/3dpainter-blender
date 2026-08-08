@@ -21,8 +21,10 @@ from bpy.props import (
 )
 from bpy.types import Operator, PropertyGroup
 
-from .common import PSContextMixin
+from .common import ModalDrawMixin, PSContextMixin
 from .psd_operators import channel_coord_settings
+from ..paintsystem.image import read_rgba, write_rgba
+from ..utils.imaging import bilinear_resize
 from ..utils.registration import collect_classes
 
 
@@ -203,26 +205,7 @@ class PAINTSYSTEM_OT_ProjectionRemove(Operator):
         return {'FINISHED'}
 
 
-def _bilinear_resize_rgba(src: np.ndarray, dw: int, dh: int) -> np.ndarray:
-    """(sh, sw, 4) → (dh, dw, 4) 바이리니어 리사이즈."""
-    sh, sw = src.shape[:2]
-    ys = np.linspace(0.0, sh - 1.0, dh, dtype=np.float32)
-    xs = np.linspace(0.0, sw - 1.0, dw, dtype=np.float32)
-    y0 = np.floor(ys).astype(np.int32)
-    x0 = np.floor(xs).astype(np.int32)
-    y1 = np.clip(y0 + 1, 0, sh - 1)
-    x1 = np.clip(x0 + 1, 0, sw - 1)
-    fy = (ys - y0)[:, None, None]
-    fx = (xs - x0)[None, :, None]
-    a = src[np.ix_(y0, x0)]
-    b = src[np.ix_(y0, x1)]
-    c = src[np.ix_(y1, x0)]
-    d = src[np.ix_(y1, x1)]
-    return (a * (1 - fy) * (1 - fx) + b * (1 - fy) * fx
-            + c * fy * (1 - fx) + d * fy * fx).astype(np.float32)
-
-
-class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
+class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
     """투사 이미지를 뷰포트에 배치한다 — 드래그: 이동, 휠: 크기,
     Enter: 신규 레이어로 투사 적용, ESC/우클릭: 취소"""
     bl_idname = "paint_system.projection_place"
@@ -277,8 +260,7 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
         self._scale = min(region.width / sw, region.height / sh) * 0.5
         self._dragging = False
         self._drag_offset = (0.0, 0.0)
-        self._handle = bpy.types.SpaceView3D.draw_handler_add(
-            self._draw, (), 'WINDOW', 'POST_PIXEL')
+        self._add_view3d_draw_handler(self._draw, ())
         context.window_manager.modal_handler_add(self)
         context.area.header_text_set(
             "투사 배치 — 드래그: 이동 · 휠: 크기 · Enter: 적용 · ESC: 취소")
@@ -315,18 +297,14 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}  # 그 외 이벤트 소비 → 뷰포트 고정
 
-    def _finish(self, context):
-        if self._handle is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
-            self._handle = None
-        # 외부 중단(파일 로드 등)으로 호출되면 area가 없을 수 있다
+    def _finish_modal_draw(self, context):
+        self._remove_view3d_draw_handler()
         if context.area:
             context.area.header_text_set(None)
             context.area.tag_redraw()
 
-    def cancel(self, context):
-        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
-        self._finish(context)
+    def _finish(self, context):
+        self._finish_modal_draw(context)
 
     def _rect(self):
         sw, sh = self._img_size
@@ -367,13 +345,10 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
         rw, rh = region.width, region.height
 
         # 1. 리전 크기 캔버스에 오버레이와 동일한 배치로 합성
-        sw, sh = self._img_size
-        buf = np.empty(sw * sh * 4, dtype=np.float32)
-        img.pixels.foreach_get(buf)
-        src = buf.reshape(sh, sw, 4)
+        src = read_rgba(img)
         x0, y0, dw, dh = self._rect()
         dw_i, dh_i = max(int(round(dw)), 1), max(int(round(dh)), 1)
-        resized = _bilinear_resize_rgba(src, dw_i, dh_i)
+        resized = bilinear_resize(src, dh_i, dw_i)
 
         canvas = np.zeros((rh, rw, 4), dtype=np.float32)
         dx0, dy0 = int(round(x0)), int(round(y0))
@@ -399,12 +374,10 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
 
         temp = bpy.data.images.new(
             "PS Projection Temp", width=rw, height=rh, alpha=True)
-        temp.pixels.foreach_set(rgb_np.ravel())
-        temp.update()
+        write_rgba(temp, rgb_np, tag=False)
         temp_alpha = bpy.data.images.new(
             "PS Projection Temp Alpha", width=rw, height=rh, alpha=True)
-        temp_alpha.pixels.foreach_set(alpha_np.ravel())
-        temp_alpha.update()
+        write_rgba(temp_alpha, alpha_np, tag=False)
 
         try:
             # 2. 신규 레이어 생성 (현재 캔버스 해상도)
@@ -430,20 +403,14 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
                     context, [(layer_img, temp), (scratch, temp_alpha)], rw, rh)
 
                 # 4. 알파 결합: 투사된 알파(스크래치의 R)를 레이어 알파로
-                lb = np.empty(lw * lh * 4, dtype=np.float32)
-                layer_img.pixels.foreach_get(lb)
-                lb = lb.reshape(lh, lw, 4)
-                sb = np.empty(lw * lh * 4, dtype=np.float32)
-                scratch.pixels.foreach_get(sb)
-                lb[:, :, 3] = sb.reshape(lh, lw, 4)[:, :, 0]
-                layer_img.pixels.foreach_set(lb.ravel())
+                lb = read_rgba(layer_img)
+                sb = read_rgba(scratch)
+                lb[:, :, 3] = sb[:, :, 0]
+                write_rgba(layer_img, lb)
             finally:
                 bpy.data.images.remove(scratch)
 
             ip.canvas = layer_img
-            layer_img.update()
-            if hasattr(layer_img, 'update_tag'):
-                layer_img.update_tag()
             from .view2d_operators import ensure_composite_shading
             ensure_composite_shading(context)
         finally:

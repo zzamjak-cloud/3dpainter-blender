@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 from ..common import blender_image_to_numpy
 from ...paintsystem.image import set_image_pixels, ImageTiles
+from ...utils.imaging import (
+    gaussian_blur_array,
+    resize_mask_bilinear,
+    rotate_mask_bilinear,
+)
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -99,30 +104,6 @@ class BrushPainterCore:
         self.brush_texture_path = None
         self.brush_folder_path = None
 
-    def _gaussian_kernel_1d(self, sigma: float) -> np.ndarray:
-        sigma = max(float(sigma), 1e-6)
-        radius = max(1, int(sigma * 2.0))
-        coords = np.arange(-radius, radius + 1, dtype=np.float32)
-        kernel = np.exp(-0.5 * (coords / sigma) ** 2)
-        kernel /= np.sum(kernel)
-        return kernel.astype(np.float32)
-
-    def _convolve1d_axis(self, array: np.ndarray, kernel: np.ndarray, axis: int) -> np.ndarray:
-        radius = kernel.size // 2
-        pad_width = [(0, 0)] * array.ndim
-        pad_width[axis] = (radius, radius)
-        padded = np.pad(array, pad_width, mode='edge')
-        windows = np.lib.stride_tricks.sliding_window_view(padded, kernel.size, axis=axis)
-        return np.tensordot(windows, kernel, axes=([-1], [0])).astype(np.float32, copy=False)
-
-    def _gaussian_blur_array(self, array: np.ndarray, sigma: float) -> np.ndarray:
-        if sigma <= 0:
-            return array.astype(np.float32, copy=True)
-        kernel = self._gaussian_kernel_1d(sigma)
-        blurred = self._convolve1d_axis(array, kernel, axis=0)
-        blurred = self._convolve1d_axis(blurred, kernel, axis=1)
-        return blurred
-
     def _rgb_to_gray(self, image: np.ndarray) -> np.ndarray:
         if image.ndim == 2:
             return image.astype(np.float32, copy=False)
@@ -130,104 +111,21 @@ class BrushPainterCore:
         gray = rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
         return gray.astype(np.float32, copy=False)
 
-    def _resize_mask_bilinear(self, mask: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
-        src_h, src_w = mask.shape
-        if src_h == out_h and src_w == out_w:
-            return mask.astype(np.float32, copy=True)
-        if out_h <= 1 or out_w <= 1:
-            return np.full((max(1, out_h), max(1, out_w)), float(mask.mean()), dtype=np.float32)
-
-        y = np.linspace(0, src_h - 1, out_h, dtype=np.float32)
-        x = np.linspace(0, src_w - 1, out_w, dtype=np.float32)
-        y0 = np.floor(y).astype(np.int32)
-        x0 = np.floor(x).astype(np.int32)
-        y1 = np.minimum(y0 + 1, src_h - 1)
-        x1 = np.minimum(x0 + 1, src_w - 1)
-        wy = y - y0
-        wx = x - x0
-
-        ia = mask[y0[:, None], x0[None, :]]
-        ib = mask[y0[:, None], x1[None, :]]
-        ic = mask[y1[:, None], x0[None, :]]
-        id_ = mask[y1[:, None], x1[None, :]]
-
-        wa = (1.0 - wy)[:, None] * (1.0 - wx)[None, :]
-        wb = (1.0 - wy)[:, None] * wx[None, :]
-        wc = wy[:, None] * (1.0 - wx)[None, :]
-        wd = wy[:, None] * wx[None, :]
-
-        result = ia * wa + ib * wb + ic * wc + id_ * wd
-        return result.astype(np.float32, copy=False)
-
     def _load_image_path_to_numpy(self, path: str) -> np.ndarray:
         existing_names = set(bpy.data.images.keys())
         loaded = bpy.data.images.load(path, check_existing=True)
 
         try:
+            # 브러시 텍스처는 1/3/4채널일 수 있어 원본 채널을 유지한다
+            # (강제 RGBA면 그레이스케일이 알파=1로 깨진다)
             width, height = loaded.size
             channels = loaded.channels
             pixels = np.empty(len(loaded.pixels), dtype=np.float32)
             loaded.pixels.foreach_get(pixels)
-            pixels = pixels.reshape((height, width, channels))
-            pixels = np.flipud(pixels)
-            return pixels
+            return np.flipud(pixels.reshape((height, width, channels)))
         finally:
             if loaded.name not in existing_names and loaded.users == 0:
                 bpy.data.images.remove(loaded)
-
-    def _rotate_mask_bilinear(self, mask: np.ndarray, angle_deg: float) -> np.ndarray:
-        angle_rad = np.deg2rad(angle_deg)
-        cos_v = float(np.cos(angle_rad))
-        sin_v = float(np.sin(angle_rad))
-
-        src_h, src_w = mask.shape
-        cy = (src_h - 1) * 0.5
-        cx = (src_w - 1) * 0.5
-
-        corners = np.array([
-            [-cy, -cx],
-            [-cy, src_w - 1 - cx],
-            [src_h - 1 - cy, -cx],
-            [src_h - 1 - cy, src_w - 1 - cx],
-        ], dtype=np.float32)
-
-        rot_y = corners[:, 0] * cos_v - corners[:, 1] * sin_v
-        rot_x = corners[:, 0] * sin_v + corners[:, 1] * cos_v
-        out_h = int(np.ceil(rot_y.max() - rot_y.min() + 1.0))
-        out_w = int(np.ceil(rot_x.max() - rot_x.min() + 1.0))
-        out_h = max(out_h, 1)
-        out_w = max(out_w, 1)
-
-        oy = np.arange(out_h, dtype=np.float32) - (out_h - 1) * 0.5
-        ox = np.arange(out_w, dtype=np.float32) - (out_w - 1) * 0.5
-        grid_y, grid_x = np.meshgrid(oy, ox, indexing='ij')
-
-        src_y = grid_y * cos_v + grid_x * sin_v + cy
-        src_x = -grid_y * sin_v + grid_x * cos_v + cx
-
-        valid = (src_y >= 0.0) & (src_y <= src_h - 1) & (src_x >= 0.0) & (src_x <= src_w - 1)
-
-        y0 = np.floor(src_y).astype(np.int32)
-        x0 = np.floor(src_x).astype(np.int32)
-        y1 = np.minimum(y0 + 1, src_h - 1)
-        x1 = np.minimum(x0 + 1, src_w - 1)
-
-        wy = src_y - y0
-        wx = src_x - x0
-
-        wa = (1.0 - wy) * (1.0 - wx)
-        wb = (1.0 - wy) * wx
-        wc = wy * (1.0 - wx)
-        wd = wy * wx
-
-        rotated = np.zeros((out_h, out_w), dtype=np.float32)
-        rotated[valid] = (
-            mask[y0[valid], x0[valid]] * wa[valid]
-            + mask[y0[valid], x1[valid]] * wb[valid]
-            + mask[y1[valid], x0[valid]] * wc[valid]
-            + mask[y1[valid], x1[valid]] * wd[valid]
-        )
-        return rotated
 
     def _quantize_angle(self, angle_deg: float) -> int:
         normalized = angle_deg % 360.0
@@ -243,7 +141,7 @@ class BrushPainterCore:
             return cached
 
         quantized_angle = (angle_bin / self.rotation_bins) * 360.0
-        rotated = self._rotate_mask_bilinear(brush, quantized_angle)
+        rotated = rotate_mask_bilinear(brush, quantized_angle)
         if len(self._rotation_cache) >= self.rotation_cache_limit:
             self._rotation_cache.clear()
         self._rotation_cache[cache_key] = rotated
@@ -323,7 +221,7 @@ class BrushPainterCore:
         size = max(1, int(size))
         resized_brush_list = []
         for brush in brush_list:
-            resized_array = self._resize_mask_bilinear(brush.astype(np.float32, copy=False), size, size)
+            resized_array = resize_mask_bilinear(brush.astype(np.float32, copy=False), size, size)
             resized_brush_list.append(resized_array)
         return resized_brush_list
     
@@ -337,13 +235,13 @@ class BrushPainterCore:
             alpha = image[..., 3:4]
             premult_rgb = image[..., :3] * alpha
             premult_rgba = np.concatenate((premult_rgb, alpha), axis=2)
-            blurred = self._gaussian_blur_array(premult_rgba, float(self.gaussian_sigma))
+            blurred = gaussian_blur_array(premult_rgba, float(self.gaussian_sigma))
             out_alpha = blurred[..., 3:4]
             safe_alpha = np.where(out_alpha > 1e-6, out_alpha, 1.0)
             out_rgb = np.where(out_alpha > 1e-6, blurred[..., :3] / safe_alpha, 0.0)
             return np.clip(np.concatenate((out_rgb, out_alpha), axis=2), 0.0, 1.0).astype(np.float32, copy=False)
 
-        return self._gaussian_blur_array(image, float(self.gaussian_sigma))
+        return gaussian_blur_array(image, float(self.gaussian_sigma))
     
     def calculate_sobel_filter(self, img_float):
         """Calculates Sobel filter for the image using numpy."""
@@ -364,7 +262,7 @@ class BrushPainterCore:
     def calculate_gradients(self, img_float):
         """Calculates gradient magnitude and orientation for brush stroke direction."""
         gray = self._rgb_to_gray(np.clip(img_float, 0.0, 1.0).astype(np.float32, copy=False))
-        img_smoothed = self._gaussian_blur_array(gray, float(self.gaussian_sigma))
+        img_smoothed = gaussian_blur_array(gray, float(self.gaussian_sigma))
 
         Gx, Gy = self.calculate_sobel_filter(img_smoothed)
         G = np.hypot(Gx, Gy)
@@ -1200,7 +1098,7 @@ class BrushPainterCore:
         if target_size_px == base_brush_size:
             duplicate_brush = selected_brush
         else:
-            duplicate_brush = self._resize_mask_bilinear(selected_brush, target_size_px, target_size_px)
+            duplicate_brush = resize_mask_bilinear(selected_brush, target_size_px, target_size_px)
 
         duplicate_rotated = self._get_rotated_brush_cached(
             duplicate_brush, duplicate_angle, (brush_index, target_size_px))

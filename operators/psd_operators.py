@@ -15,6 +15,7 @@ from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
 
 from .common import PSContextMixin
+from ..paintsystem.image import read_rgba, write_rgba
 from ..utils.registration import collect_classes
 
 # Paint System(MixRGB 계열) ↔ PSD 블렌드 모드 매핑
@@ -88,22 +89,13 @@ def _image_layers_top_down(channel):
 
 def _image_to_uint8(img) -> np.ndarray:
     """블렌더 이미지 → (H, W, 4) uint8, PSD의 top-down 행 순서로 뒤집는다."""
-    w, h = int(img.size[0]), int(img.size[1])
-    buf = np.empty(w * h * 4, dtype=np.float32)
-    img.pixels.foreach_get(buf)
-    arr = buf.reshape(h, w, 4)
-    arr = np.flipud(arr)
+    arr = np.flipud(read_rgba(img))
     return np.clip(arr * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
 
 def _uint8_to_image(img, arr: np.ndarray) -> None:
     """(H, W, 4) uint8(top-down) → 블렌더 이미지 픽셀."""
-    f = np.flipud(arr.astype(np.float32) / 255.0)
-    img.pixels.foreach_set(f.ravel())
-    img.update()
-    # GPU 텍스처 재업로드 통지 (라이브 동기화 시 즉시 반영)
-    if hasattr(img, 'update_tag'):
-        img.update_tag()
+    write_rgba(img, np.flipud(arr.astype(np.float32) / 255.0))
 
 
 def _psd_layer_canvas_pixels(psd, layer) -> np.ndarray:

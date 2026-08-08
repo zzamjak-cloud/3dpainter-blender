@@ -723,57 +723,69 @@ def apply_merged_image_to_layer(merged_layer: "Layer", image: Image, uv_map_name
     merged_layer.correct_image_aspect = False
 
 
-class PAINTSYSTEM_OT_MergeDown(BakeOperator):
-    bl_idname = "paint_system.merge_down"
-    bl_label = "Merge Down"
-    bl_description = "Merge the down layers"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    def get_below_layer(self, context, unprocessed: bool = False):
-        ps_ctx = self.parse_context(context)
+class MergeLayerOperator(BakeOperator):
+    # 병합 오퍼레이터 공용 베이스 — 자신은 등록 대상이 아니다
+    _ps_skip_register = True
+
+    # 병합 대상 이웃의 방향. 'DOWN'이면 아래 레이어, 'UP'이면 위 레이어
+    direction = 'DOWN'
+
+    @classmethod
+    def get_neighbor_layer(cls, context, unprocessed: bool = False):
+        """병합 대상이 되는 이웃 레이어를 돌려준다. 없으면 None."""
+        ps_ctx = cls.parse_context(context)
         active_channel = ps_ctx.active_channel
+        if not active_channel:
+            return None
         active_layer = ps_ctx.unlinked_layer if unprocessed else ps_ctx.active_layer
         flattened_layers = active_channel.flattened_unlinked_layers if unprocessed else active_channel.flattened_layers
-        if active_layer and flattened_layers.index(active_layer) < len(flattened_layers) - 1:
-            return flattened_layers[flattened_layers.index(active_layer) + 1]
+        if not active_layer:
+            return None
+        index = flattened_layers.index(active_layer) + (1 if cls.direction == 'DOWN' else -1)
+        if 0 <= index < len(flattened_layers):
+            return flattened_layers[index]
         return None
-    
+
     @classmethod
     def poll(cls, context):
         ps_ctx = cls.parse_context(context)
         active_layer = ps_ctx.active_layer
-        below_layer = cls.get_below_layer(cls, context)
-        if not below_layer:
+        neighbor_layer = cls.get_neighbor_layer(context)
+        if not neighbor_layer:
             return False
+        # 병합 결과가 덮어써지는 쪽(아래로 병합이면 아래 레이어, 위로 병합이면 자기 자신)이
+        # 색을 변형하는 레이어면 결과가 어긋나므로 막는다
+        color_data_layer = neighbor_layer if cls.direction == 'DOWN' else active_layer
         return (
             active_layer
-            and below_layer
+            and neighbor_layer
             and active_layer.type != "FOLDER"
-            and below_layer.type != "FOLDER"
-            and active_layer.parent_id == below_layer.parent_id
+            and neighbor_layer.type != "FOLDER"
+            and active_layer.parent_id == neighbor_layer.parent_id
             and active_layer.enabled
-            and below_layer.enabled
-            and not below_layer.modifies_color_data
-            )
-    
+            and neighbor_layer.enabled
+            and not color_data_layer.modifies_color_data
+        )
+
     def invoke(self, context, event):
         self.get_coord_type(context)
         self.update_bake_multiple_objects(context)
-        below_layer = self.get_below_layer(context)
-        if below_layer:
-            if below_layer.uses_coord_type:
-                if getattr(below_layer, 'coord_type', 'UV') == 'AUTO':
+        neighbor_layer = self.get_neighbor_layer(context)
+        # Choose UV based on the neighbor layer
+        if neighbor_layer:
+            if neighbor_layer.uses_coord_type:
+                if getattr(neighbor_layer, 'coord_type', 'UV') == 'AUTO':
                     self.uv_map_name = DEFAULT_PS_UV_MAP_NAME
             else:
                 self.uv_map_name = DEFAULT_PS_UV_MAP_NAME if self.use_paint_system_uv else self.uv_map_name
-        if below_layer.type == "IMAGE":
+        if neighbor_layer.type == "IMAGE":
             self.image_resolution = "CUSTOM"
-            self.image_width = below_layer.image.size[0]
-            self.image_height = below_layer.image.size[1]
+            self.image_width = neighbor_layer.image.size[0]
+            self.image_height = neighbor_layer.image.size[1]
         # Set cursor back to default
         context.window.cursor_set('DEFAULT')
         return context.window_manager.invoke_props_dialog(self)
-    
+
     def draw(self, context):
         layout = self.layout
         ps_ctx = self.parse_context(context)
@@ -794,35 +806,35 @@ class PAINTSYSTEM_OT_MergeDown(BakeOperator):
         ps_ctx = self.parse_context(context)
         active_channel = ps_ctx.active_channel
         active_layer = ps_ctx.active_layer
-        below_layer = self.get_below_layer(context)
+        neighbor_layer = self.get_neighbor_layer(context)
         unlinked_layer = ps_ctx.unlinked_layer
-        below_unlinked_layer = self.get_below_layer(context, unprocessed=True)
+        neighbor_unlinked_layer = self.get_neighbor_layer(context, unprocessed=True)
 
         if not active_channel:
             context.window.cursor_set('DEFAULT')
             return {'CANCELLED'}
-        
+
         image = self.create_image(context)
-        
+
         to_be_enabled_layers = []
         # Store original blend modes
         original_active_blend_mode = get_layer_blend_type(active_layer)
-        original_below_blend_mode = get_layer_blend_type(below_layer)
+        original_neighbor_blend_mode = get_layer_blend_type(neighbor_layer)
 
         try:
-            # Enable both active layer and below layer, disable all others
+            # Enable both active layer and neighbor layer, disable all others
             for layer in active_channel.flattened_layers:
-                if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer != below_layer:
+                if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer != neighbor_layer:
                     to_be_enabled_layers.append(layer)
                     layer.enabled = False
 
-            # Enable the below layer if it's not already enabled
-            if not below_layer.enabled:
-                below_layer.enabled = True
+            # Ensure the neighbor layer is enabled
+            if not neighbor_layer.enabled:
+                neighbor_layer.enabled = True
 
             # Set both layers to MIX for proper blending
             set_layer_blend_type(active_layer, 'MIX')
-            set_layer_blend_type(below_layer, 'MIX')
+            set_layer_blend_type(neighbor_layer, 'MIX')
 
             # Bake both layers into the new image
             active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
@@ -830,7 +842,7 @@ class PAINTSYSTEM_OT_MergeDown(BakeOperator):
             # 베이크가 실패해도 사용자 레이어 상태는 반드시 원복한다
             # Restore original blend modes
             set_layer_blend_type(active_layer, original_active_blend_mode)
-            set_layer_blend_type(below_layer, original_below_blend_mode)
+            set_layer_blend_type(neighbor_layer, original_neighbor_blend_mode)
 
             # Restore other layers
             for layer in to_be_enabled_layers:
@@ -840,137 +852,29 @@ class PAINTSYSTEM_OT_MergeDown(BakeOperator):
             context.window.cursor_set('DEFAULT')
 
         # Remove the current layer since it's been merged
-        apply_merged_image_to_layer(below_unlinked_layer, image, self.uv_map_name)
+        apply_merged_image_to_layer(neighbor_unlinked_layer, image, self.uv_map_name)
         active_channel.delete_layer(context, unlinked_layer)
-        active_channel.set_active_index_to_layer(context, below_unlinked_layer)
+        active_channel.set_active_index_to_layer(context, neighbor_unlinked_layer)
         end_time = time.time()
         # report the time taken
-        self.report({'INFO'}, f"Merged down in {round(end_time - start_time, 2)} seconds")
+        self.report({'INFO'}, f"Merged {self.direction.lower()} in {round(end_time - start_time, 2)} seconds")
         return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_MergeUp(BakeOperator):
+class PAINTSYSTEM_OT_MergeDown(MergeLayerOperator):
+    bl_idname = "paint_system.merge_down"
+    bl_label = "Merge Down"
+    bl_description = "Merge the down layers"
+    bl_options = {'REGISTER', 'UNDO'}
+    direction = 'DOWN'
+
+
+class PAINTSYSTEM_OT_MergeUp(MergeLayerOperator):
     bl_idname = "paint_system.merge_up"
     bl_label = "Merge Up"
     bl_description = "Merge the layer into the one above"
     bl_options = {'REGISTER', 'UNDO'}
-
-    def get_above_layer(self, context, unprocessed: bool = False):
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        active_layer = ps_ctx.unlinked_layer if unprocessed else ps_ctx.active_layer
-        flattened_layers = active_channel.flattened_unlinked_layers if unprocessed else active_channel.flattened_layers
-        if active_layer and flattened_layers.index(active_layer) > 0:
-            return flattened_layers[flattened_layers.index(active_layer) - 1]
-        return None
-
-    @classmethod
-    def poll(cls, context):
-        ps_ctx = cls.parse_context(context)
-        active_layer = ps_ctx.active_layer
-        above_layer = cls.get_above_layer(cls, context)
-        if not above_layer:
-            return False
-        return (
-            active_layer
-            and above_layer
-            and active_layer.type != "FOLDER"
-            and above_layer.type != "FOLDER"
-            and active_layer.parent_id == above_layer.parent_id
-            and active_layer.enabled
-            and above_layer.enabled
-            and not active_layer.modifies_color_data
-        )
-
-    def invoke(self, context, event):
-        self.get_coord_type(context)
-        self.update_bake_multiple_objects(context)
-        above_layer = self.get_above_layer(context)
-        # Choose UV based on the layer above
-        if above_layer:
-            if above_layer.uses_coord_type:
-                if getattr(above_layer, 'coord_type', 'UV') == 'AUTO':
-                    self.uv_map_name = DEFAULT_PS_UV_MAP_NAME
-            else:
-                self.uv_map_name = DEFAULT_PS_UV_MAP_NAME if self.use_paint_system_uv else self.uv_map_name
-        if above_layer.type == "IMAGE":
-            self.image_resolution = "CUSTOM"
-            self.image_width = above_layer.image.size[0]
-            self.image_height = above_layer.image.size[1]
-        return context.window_manager.invoke_props_dialog(self)
-
-    def draw(self, context):
-        layout = self.layout
-        ps_ctx = self.parse_context(context)
-        box = layout.box()
-        col = box.column(align=True)
-        col.label(text="This operation will convert the current layer", icon='INFO')
-        col.label(text="into an image layer.", icon='BLANK1')
-        self.other_objects_ui(layout, context)
-        self.image_create_ui(layout, context, show_name=False)
-        box = layout.box()
-        box.label(text="UV Map", icon='UV')
-        box.prop_search(self, "uv_map_name", ps_ctx.ps_object.data, "uv_layers", text="")
-
-    def execute(self, context):
-        start_time = time.time()
-        # Set cursor to wait
-        context.window.cursor_set('WAIT')
-        ps_ctx = self.parse_context(context)
-        active_channel = ps_ctx.active_channel
-        active_layer = ps_ctx.active_layer
-        above_layer = self.get_above_layer(context)
-        unlinked_layer = ps_ctx.unlinked_layer
-        above_unlinked_layer = self.get_above_layer(context, unprocessed=True)
-
-        if not active_channel:
-            context.window.cursor_set('DEFAULT')
-            return {'CANCELLED'}
-
-        image = self.create_image(context)
-
-        to_be_enabled_layers = []
-        # Store original blend modes
-        original_active_blend_mode = get_layer_blend_type(active_layer)
-        original_above_blend_mode = get_layer_blend_type(above_layer)
-
-        try:
-            # Enable both active layer and above layer, disable all others
-            for layer in active_channel.flattened_layers:
-                if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer != above_layer:
-                    to_be_enabled_layers.append(layer)
-                    layer.enabled = False
-
-            # Ensure the above layer is enabled
-            if not above_layer.enabled:
-                above_layer.enabled = True
-
-            # Set both layers to MIX for proper blending
-            set_layer_blend_type(active_layer, 'MIX')
-            set_layer_blend_type(above_layer, 'MIX')
-
-            # Bake both layers into the new image
-            active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
-        finally:
-            # 베이크가 실패해도 사용자 레이어 상태는 반드시 원복한다
-            # Restore original blend modes
-            set_layer_blend_type(active_layer, original_active_blend_mode)
-            set_layer_blend_type(above_layer, original_above_blend_mode)
-
-            # Restore other layers
-            for layer in to_be_enabled_layers:
-                layer.enabled = True
-
-            # Set cursor back to default
-            context.window.cursor_set('DEFAULT')
-
-        apply_merged_image_to_layer(above_unlinked_layer, image, self.uv_map_name)
-        active_channel.delete_layer(context, unlinked_layer)
-        active_channel.set_active_index_to_layer(context, above_unlinked_layer)
-        end_time = time.time()
-        # report the time taken
-        self.report({'INFO'}, f"Merged up in {round(end_time - start_time, 2)} seconds")
-        return {'FINISHED'}
+    direction = 'UP'
 
 classes = collect_classes(sys.modules[__name__])
 
