@@ -392,9 +392,12 @@ def _get_mesh_uv_cache(obj, *, want_bvh: bool = False, shader=None) -> Optional[
     if shader is not None:
         sid = id(shader)
         if cache.batch is None or cache.batch_shader_id != sid:
+            # TRIS 배치는 (n_tris*3, 3)/(n_tris*3, 2) 평탄 배열이 필요하다.
+            # cache.tl은 BVH용 (n_tris, 3)이므로 ravel로 인덱싱한다.
+            tl_flat = cache.tl.ravel()
             cache.batch = batch_for_shader(
                 shader, 'TRIS',
-                {"pos": cache.co[cache.loop_v[cache.tl]], "uv": cache.uvs[cache.tl]})
+                {"pos": cache.co[cache.loop_v[tl_flat]], "uv": cache.uvs[tl_flat]})
             cache.batch_shader_id = sid
     return cache
 
