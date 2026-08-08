@@ -1818,7 +1818,72 @@ class Channel(BaseNestedListManager):
             if parent_layer_linked.blend_mode == "PASSTHROUGH":
                 return self.get_parent_layer_id(parent_layer)
         return parent_layer.id
-    
+
+    def get_all_layer_warnings(self, context: Context, ps_ctx=None) -> Dict[int, List[str]]:
+        """채널의 모든 레이어 경고를 한 번에 계산해 ``{layer.id: [warning, ...]}``로 반환한다.
+
+        판정 로직은 Layer.get_layer_warnings와 동일하다. 다만 레이어마다 반복되던
+        parse_context / flatten_hierarchy / find_node 같은 채널 공통 비용을 1회로 줄인다.
+        """
+        if ps_ctx is None:
+            ps_ctx = parse_context(context)
+        flattened = self.flatten_hierarchy()
+
+        # 부모 추적용 id 맵 (get_item_by_id 선형 스캔 대체)
+        item_by_id = {}
+        for item, _level in flattened:
+            item_by_id.setdefault(item.id, item)
+
+        def parent_layer_id(layer: "Layer", ignore_passthrough: bool = False) -> int:
+            # Channel.get_parent_layer_id와 동일한 규칙(패스스루는 한 단계만 건너뜀)
+            if layer.parent_id == -1:
+                return -1
+            parent_layer = item_by_id.get(layer.parent_id)
+            if parent_layer is None:
+                return -1
+            if ignore_passthrough:
+                parent_layer_linked = parent_layer.get_layer_data()
+                if parent_layer_linked and parent_layer_linked.blend_mode == "PASSTHROUGH":
+                    return parent_layer_id(parent_layer)
+            return parent_layer.id
+
+        group_node = find_node(ps_ctx.active_material.node_tree, {
+            'bl_idname': 'ShaderNodeGroup', 'node_tree': ps_ctx.active_group.node_tree})
+        color_channel_name = self.name
+        alpha_channel_name = self.name + " Alpha"
+        has_node_connected = any(input.is_linked for input in group_node.inputs if input.name in {
+                                 color_channel_name, alpha_channel_name}) if group_node else False
+        last_flat_index = len(flattened) - 1
+
+        warnings_by_id: Dict[int, List[str]] = {}
+        for current_flat_index, (layer, _level) in enumerate(flattened):
+            layer_data = layer.get_layer_data()
+            if not layer_data:
+                # 링크가 깨진 레이어는 UIList가 그리지 않으므로 경고도 없다
+                warnings_by_id[layer.id] = []
+                continue
+            below_layer, _next_index = self.get_next_sibling_item(flattened, current_flat_index)
+            own_parent_id = parent_layer_id(layer, ignore_passthrough=True)
+            # 부모가 다르면 아래 레이어로 치지 않는다
+            if below_layer and own_parent_id != parent_layer_id(below_layer, ignore_passthrough=True):
+                below_layer = None
+            warnings: List[str] = []
+            if not below_layer:
+                blend_mode = get_layer_blend_type(layer_data)
+                if not has_node_connected or current_flat_index != last_flat_index:
+                    if blend_mode != 'MIX':
+                        if own_parent_id != -1:
+                            warnings.append("Last layer in folder. Blending may not work. Use folder with Passthrough blend mode.")
+                        else:
+                            warnings.append("No layer below. Blending may not work.")
+                    if layer_data.type == "ADJUSTMENT":
+                        warnings.append("No layer below. Adjustment effects may not work.")
+                else:
+                    if self.use_alpha and group_node and group_node.inputs[alpha_channel_name].default_value == 0:
+                        warnings.append(f"Input Alpha of {color_channel_name} channel is 0. Blending may not work.")
+            warnings_by_id[layer.id] = warnings
+        return warnings_by_id
+
     def update_node_tree(self, context:Context):
         if not self.node_tree:
             return
@@ -3018,12 +3083,23 @@ def get_all_layers() -> list[Layer]:
     """Return a flat list of every layer across all materials."""
     return [layer for _mat, _grp, _ch, layer in iter_all_layers()]
 
-def is_layer_linked(check_layer: Layer) -> bool:
-    """Check if the layer is linked (referenced by more than one layer entry)."""
+def build_layer_link_counter() -> Counter:
+    """파일 전체 레이어의 uid 참조 횟수를 센다.
+
+    UIList처럼 행마다 is_layer_linked를 부르는 곳에서 이 카운터를 1회만 만들어
+    넘겨주면 전체 머티리얼 순회가 반복되지 않는다.
+    """
     counter = Counter()
     for _mat, _grp, _ch, layer in iter_all_layers():
         counter[layer.uid if not layer.is_linked else layer.linked_layer_uid] += 1
-    return counter[check_layer.uid if not check_layer.is_linked else check_layer.linked_layer_uid] > 1
+    return counter
+
+
+def is_layer_linked(check_layer: Layer, link_counter: Optional[Counter] = None) -> bool:
+    """Check if the layer is linked (referenced by more than one layer entry)."""
+    if link_counter is None:
+        link_counter = build_layer_link_counter()
+    return link_counter[check_layer.uid if not check_layer.is_linked else check_layer.linked_layer_uid] > 1
 
 def sort_actions(context: bpy.types.Context, global_layer: GlobalLayer) -> list[MarkerAction]:
     sorted_actions = []

@@ -169,7 +169,7 @@ class MAT_PT_PaintSystemMainPanel(PSContextMixin, Panel):
             return
         ps_ctx = self.parse_context(context)
         if ps_ctx.ps_settings and not ps_ctx.ps_settings.use_legacy_ui and ps_ctx.active_channel:
-            toggle_paint_mode_ui(layout, context)
+            toggle_paint_mode_ui(layout, context, ps_ctx=ps_ctx)
         ob = ps_ctx.ps_object
         if ob.type != 'MESH':
             return
@@ -211,7 +211,7 @@ class MAT_PT_PaintSystemMainPanel(PSContextMixin, Panel):
             header, panel = layout.panel("MAT_PT_ChannelsPanel", default_closed=True)
             header.label(text="Channels", icon_value=get_icon('channel'))
             if panel:
-                draw_channels_panel(panel, context)
+                draw_channels_panel(panel, context, ps_ctx=ps_ctx)
             else:
                 row = header.row(align=True)
                 row.scale_x = 1.1

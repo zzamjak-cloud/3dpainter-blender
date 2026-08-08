@@ -68,8 +68,9 @@ class PAINTSYSTEM_UL_channels(PSContextMixin, UIList):
     #     flt_neworder = list(range(len(channels)))
     #     return flt_flags, flt_neworder
 
-def draw_channels_list(context, layout):
-    ps_ctx = PSContextMixin.parse_context(context)
+def draw_channels_list(context, layout, ps_ctx=None):
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
     row = layout.row()
     row.template_list(
         "PAINTSYSTEM_UL_channels", 
@@ -103,7 +104,7 @@ class MAT_PT_ChannelsSelect(PSContextMixin, Panel):
         ps_ctx = self.parse_context(context)
         col = layout.column(align=True)
         col.label(text="Channels")
-        draw_channels_list(context, col)
+        draw_channels_list(context, col, ps_ctx=ps_ctx)
 
 def poll_channels_panel(context: Context):
     ps_ctx = PSContextMixin.parse_context(context)
@@ -111,16 +112,17 @@ def poll_channels_panel(context: Context):
         return False
     return ps_ctx.ps_mat_data and ps_ctx.active_group is not None
 
-def draw_channels_panel(layout: UILayout, context: Context):
-    ps_ctx = PSContextMixin.parse_context(context)
+def draw_channels_panel(layout: UILayout, context: Context, ps_ctx=None):
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
     box = layout.box()
     if ps_ctx.ps_settings.use_legacy_ui:
         box.menu("MAT_MT_PaintSystemChannelsMergeAndExport", icon="TEXTURE_DATA", text="Bake and Export")
-    draw_channels_list(context, box)
+    draw_channels_list(context, box, ps_ctx=ps_ctx)
     header, panel = box.panel("MAT_PT_ChannelsSettings", default_closed=True)
     header.label(text="Channel Settings")
     if panel:
-        draw_channels_settings_panel(panel, context)
+        draw_channels_settings_panel(panel, context, ps_ctx=ps_ctx)
 
 class MAT_PT_ChannelsPanel(PSContextMixin, Panel):
     bl_idname = 'MAT_PT_ChannelsPanel'
@@ -153,8 +155,9 @@ class MAT_PT_ChannelsPanel(PSContextMixin, Panel):
         layout = self.layout
         draw_channels_panel(layout, context)
 
-def draw_channels_settings_panel(layout: UILayout, context: Context):
-    ps_ctx = PSContextMixin.parse_context(context)
+def draw_channels_settings_panel(layout: UILayout, context: Context, ps_ctx=None):
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
     active_channel = ps_ctx.active_channel
     if active_channel.bake_image:
         row = layout.row(align=True)

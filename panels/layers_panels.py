@@ -36,6 +36,7 @@ from ..paintsystem.data import (
     GEOMETRY_TYPE_ENUM,
     Layer,
     is_layer_linked,
+    build_layer_link_counter,
     sort_actions
 )
 
@@ -46,8 +47,9 @@ if is_newer_than(4,3):
     )
 
 
-def draw_input_sockets(layout, context: Context, only_output: bool = False):
-    ps_ctx = PSContextMixin.parse_context(context)
+def draw_input_sockets(layout, context: Context, only_output: bool = False, ps_ctx=None):
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
     active_layer = ps_ctx.active_layer
     header, panel = layout.panel("input_sockets_panel", default_closed=True)
     header.label(text="Sockets Settings:", icon_value=get_icon('float_socket'))
@@ -55,23 +57,71 @@ def draw_input_sockets(layout, context: Context, only_output: bool = False):
         row = panel.row(align=True)
         row.label(icon="BLANK1")
         draw_socket_grid(row, active_layer, include_inputs=not only_output)
+
+
+# 리드로우 1회분 레이어 UIList 스냅샷. MAT_PT_Layers.draw()가 template_list 직전에 채우고
+# draw_item/filter_items가 읽는다. 리드로우마다 새로 만들며 리드로우 간 재사용하지 않는다.
+_layer_list_snapshot = None
+
+
+def build_layer_list_snapshot(context: Context, channel, ps_ctx=None) -> dict:
+    """행마다 반복되던 채널 단위 조회를 1회로 묶은 스냅샷을 만든다."""
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
+    flattened = channel.flatten_hierarchy()
+
+    index_by_pointer = {}
+    level_by_id = {}
+    for flat_index, (item, level) in enumerate(flattened):
+        index_by_pointer.setdefault(item.as_pointer(), flat_index)
+        level_by_id.setdefault(item.id, level)
+
+    # get_item_by_id와 동일하게 컬렉션 전체 기준, 먼저 나온 항목 우선
+    item_by_id = {}
+    for item in channel.layers:
+        item_by_id.setdefault(item.id, item)
+
+    return {
+        'channel_pointer': channel.as_pointer(),
+        'flat_count': len(flattened),
+        'index_by_pointer': index_by_pointer,
+        'level_by_id': level_by_id,
+        'item_by_id': item_by_id,
+        'link_counter': build_layer_link_counter(),
+        'warnings_by_id': channel.get_all_layer_warnings(context, ps_ctx=ps_ctx),
+        'show_opacity': ps_ctx.ps_settings.show_opacity_in_layer_list,
+    }
+
+
+def _get_layer_list_snapshot(context: Context, channel) -> dict:
+    """현재 리드로우의 스냅샷을 돌려준다. 없거나 채널이 다르면 그 자리에서 새로 만든다."""
+    snapshot = _layer_list_snapshot
+    if snapshot is not None and snapshot['channel_pointer'] == channel.as_pointer():
+        return snapshot
+    # 폴백: 패널 draw를 거치지 않고 UIList가 그려지는 경우에도 깨지지 않도록 한다.
+    # 이 결과는 저장하지 않는다(다음 리드로우에서 stale로 재사용되는 것을 막기 위해).
+    return build_layer_list_snapshot(context, channel)
+
+
 class MAT_PT_UL_LayerList(PSContextMixin, UIList):
     def draw_item(self, context: Context, layout: bpy.types.UILayout, data, item, icon, active_data, active_property, index):
-        ps_ctx = self.parse_context(context)
         linked_item = item.get_layer_data()
         if not linked_item:
             return
         # The UIList passes channel as 'data'
         active_channel = data
-        flattened = active_channel.flattened_layers
-        if index < len(flattened):
-            level = active_channel.get_item_level_from_id(item.id)
+        snapshot = _get_layer_list_snapshot(context, active_channel)
+        if index < snapshot['flat_count']:
+            level = snapshot['level_by_id'].get(item.id)
+            if level is None:
+                level = active_channel.get_item_level_from_id(item.id)
             main_row = layout.row(align=True)
-            warnings = item.get_layer_warnings(context)
+            warnings = snapshot['warnings_by_id'].get(item.id)
+            if warnings is None:
+                warnings = item.get_layer_warnings(context)
                 # main_row.label(text="\n".join(warnings), icon='ERROR')
             # Check if parent of the current item is enabled
-            parent_item = active_channel.get_item_by_id(
-                item.parent_id)
+            parent_item = snapshot['item_by_id'].get(item.parent_id) if item.parent_id != -1 else None
             if parent_item and not parent_item.enabled:
                 main_row.enabled = False
 
@@ -96,12 +146,12 @@ class MAT_PT_UL_LayerList(PSContextMixin, UIList):
                 row.label(icon=icon_parser('VIEW_LOCKED', 'LOCKED'))
             if len(linked_item.actions) > 0:
                 row.label(icon="KEYTYPE_KEYFRAME_VEC")
-            if is_layer_linked(linked_item):
+            if is_layer_linked(linked_item, snapshot['link_counter']):
                 row.label(icon="LINKED")
             if warnings:
                 op = row.operator("paint_system.show_layer_warnings", text="", icon_value=get_icon('error'), emboss=False)
                 op.layer_id = item.id
-            if ps_ctx.ps_settings.show_opacity_in_layer_list:
+            if snapshot['show_opacity']:
                 row.label(text=f"{linked_item.opacity:.1f}")
             row.prop(linked_item, "enabled", text="",
                      icon="HIDE_OFF" if linked_item.enabled else "HIDE_ON", emboss=False)
@@ -119,7 +169,9 @@ class MAT_PT_UL_LayerList(PSContextMixin, UIList):
         # If you do not make filtering and/or ordering, return empty list(s) (this will be more efficient than
         # returning full lists doing nothing!).
         layers = getattr(data, propname).values()
-        flattened_layers = data.flattened_unlinked_layers
+        snapshot = _get_layer_list_snapshot(context, data)
+        index_by_pointer = snapshot['index_by_pointer']
+        item_by_id = snapshot['item_by_id']
 
         # Default return values.
         flt_flags = []
@@ -128,12 +180,16 @@ class MAT_PT_UL_LayerList(PSContextMixin, UIList):
         # Filtering by name
         flt_flags = [self.bitflag_filter_item] * len(layers)
         for idx, layer in enumerate(layers):
-            flt_neworder.append(flattened_layers.index(layer))
-            while layer.parent_id != -1:
-                layer = data.get_item_by_id(layer.parent_id)
-                if layer and not layer.is_expanded:
+            flt_neworder.append(index_by_pointer[layer.as_pointer()])
+            parent_id = layer.parent_id
+            while parent_id != -1:
+                parent = item_by_id.get(parent_id)
+                if parent is None:
+                    break
+                if not parent.is_expanded:
                     flt_flags[idx] &= ~self.bitflag_filter_item
                     break
+                parent_id = parent.parent_id
 
         return flt_flags, flt_neworder
 
@@ -168,13 +224,14 @@ class MAT_MT_PaintSystemMergeAndExport(PSContextMixin, Menu):
             layout.operator("paint_system.export_all_images", text="Export All Channels", icon='EXPORT')
 
 
-def draw_layer_settings(layout, context):
-    ps_ctx = PSContextMixin.parse_context(context)
+def draw_layer_settings(layout, context, ps_ctx=None):
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
     active_layer = ps_ctx.active_layer
     layout.enabled = not active_layer.lock_layer
     if ps_ctx.ps_settings.use_legacy_ui:
         box = layout.box()
-        layer_settings_ui(box, context)
+        layer_settings_ui(box, context, ps_ctx=ps_ctx)
     else:
         box = None
     match active_layer.type:
@@ -324,7 +381,7 @@ def draw_layer_settings(layout, context):
             panel = image_node_settings(col, image_node, active_layer, "image", simple_ui=True)
             if panel:
                 line_separator(col)
-            draw_input_sockets(col, context, only_output=True)
+            draw_input_sockets(col, context, only_output=True, ps_ctx=ps_ctx)
             row = col.row(align=True)
             row.label(icon="BLANK1")
             row.prop(active_layer, "correct_image_aspect", text="Correct Aspect", toggle=1, icon='CHECKBOX_HLT' if active_layer.correct_image_aspect else 'CHECKBOX_DEHLT')
@@ -358,7 +415,7 @@ def draw_layer_settings(layout, context):
             col = box.column()
             col.use_property_decorate = False
             col.use_property_split = True
-            draw_input_sockets(col, context, only_output=True)
+            draw_input_sockets(col, context, only_output=True, ps_ctx=ps_ctx)
             col.prop(active_layer, "texture_type", text="Texture Type")
             texture_node = active_layer.source_node
             if texture_node:
@@ -530,7 +587,7 @@ class MAT_PT_Layers(PSContextMixin, Panel):
         layout = self.layout
         if ps_ctx.ps_settings.use_legacy_ui:
             box = layout.box()
-            toggle_paint_mode_ui(box, context)
+            toggle_paint_mode_ui(box, context, ps_ctx=ps_ctx)
         else:
             box = layout
         if ps_ctx.ps_object.type == 'GREASEPENCIL':
@@ -607,7 +664,7 @@ class MAT_PT_Layers(PSContextMixin, Panel):
                     box = main_row.box()
                     if ps_ctx.active_layer and ps_ctx.active_layer.node_tree:
                         settings_box = box.box()
-                        layer_settings_ui(settings_box, context)
+                        layer_settings_ui(settings_box, context, ps_ctx=ps_ctx)
                 else:
                     box = layout.box()
         
@@ -644,10 +701,17 @@ class MAT_PT_Layers(PSContextMixin, Panel):
             row = box.row()
             layers_col = row.column()
             scale_content(context, row, scale_x=1, scale_y=1.5)
-            layers_col.template_list(
-                "MAT_PT_UL_LayerList", "", active_channel, "layers", active_channel, "active_index",
-                rows=min(max(6, len(layers)), 7)
-            )
+            # UIList 콜백이 행마다 채널 전체를 다시 훑지 않도록 이번 리드로우분 스냅샷을 미리 만든다.
+            # template_list가 끝나면 즉시 비워 다음 리드로우에서 stale 값이 쓰이지 않게 한다.
+            global _layer_list_snapshot
+            _layer_list_snapshot = build_layer_list_snapshot(context, active_channel, ps_ctx=ps_ctx)
+            try:
+                layers_col.template_list(
+                    "MAT_PT_UL_LayerList", "", active_channel, "layers", active_channel, "active_index",
+                    rows=min(max(6, len(layers)), 7)
+                )
+            finally:
+                _layer_list_snapshot = None
 
             col = row.column(align=True)
             draw_layer_sidebar(col, ps_ctx.ps_settings.use_legacy_ui)
@@ -671,7 +735,7 @@ class MAT_PT_Layers(PSContextMixin, Panel):
             header, panel = layout.panel("layer_settings_panel")
             header.label(text="Layer Settings")
             if panel:
-                draw_layer_settings(panel, context)
+                draw_layer_settings(panel, context, ps_ctx=ps_ctx)
 
 
 def get_image(context) -> bpy.types.Image:

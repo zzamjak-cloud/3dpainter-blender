@@ -201,7 +201,10 @@ def check_group_multiuser(group_node_tree: bpy.types.NodeTree) -> bool:
             for group in mat.ps_mat_data.groups:
                 if group.node_tree == group_node_tree:
                     user_count += 1
-    return user_count > 1
+                    # 2개만 확인되면 결과가 확정되므로 나머지 머티리얼은 훑지 않는다
+                    if user_count > 1:
+                        return True
+    return False
 
 
 def image_node_settings(layout: bpy.types.UILayout, image_node: bpy.types.Node, data, propname="image", text="", icon="NONE", icon_value=None, default_closed=True, simple_ui=False):
@@ -266,9 +269,10 @@ def is_basic_setup(node_tree: bpy.types.NodeTree) -> bool:
     return is_basic_setup
 
 
-def toggle_paint_mode_ui(layout: bpy.types.UILayout, context: bpy.types.Context):
+def toggle_paint_mode_ui(layout: bpy.types.UILayout, context: bpy.types.Context, ps_ctx=None):
     current_mode = context.mode
-    ps_ctx = PSContextMixin.parse_context(context)
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
     active_group = ps_ctx.active_group
     active_channel = ps_ctx.active_channel
     mat = ps_ctx.active_material
@@ -313,8 +317,9 @@ def toggle_paint_mode_ui(layout: bpy.types.UILayout, context: bpy.types.Context)
         row.menu("MAT_MT_PaintSystemMergeAndExport",
                     text="Bake and Export")
 
-def layer_settings_ui(layout: bpy.types.UILayout, context: bpy.types.Context):
-    ps_ctx = PSContextMixin.parse_context(context)
+def layer_settings_ui(layout: bpy.types.UILayout, context: bpy.types.Context, ps_ctx=None):
+    if ps_ctx is None:
+        ps_ctx = PSContextMixin.parse_context(context)
     active_layer = ps_ctx.active_layer
     if not active_layer or not active_layer.node_tree:
         return
