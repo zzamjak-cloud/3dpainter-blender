@@ -528,6 +528,44 @@ def draw_warning_box(layout: bpy.types.UILayout, lines):
     return warning_col
 
 
+# draw()는 읽기 전용이어야 한다. 프리뷰 생성은 데이터 쓰기이므로 draw 중 호출하면
+# 무한 리드로우·크래시로 이어진다. 아래 큐에 모아 두었다가 타이머에서 한 번에 처리한다.
+_pending_previews: set = set()
+
+
+def _flush_pending_previews():
+    global _pending_previews
+    pending, _pending_previews = _pending_previews, set()
+    for datablock, mode in pending:
+        try:
+            if mode == 'ASSET':
+                datablock.asset_generate_preview()
+            else:
+                datablock.preview_ensure()
+        except (ReferenceError, AttributeError, RuntimeError):
+            # 타이머가 도는 사이에 삭제/언두된 데이터블록은 건너뛴다.
+            pass
+    return None
+
+
+def request_preview(datablock, mode: str = 'ENSURE'):
+    """draw() 밖에서 프리뷰를 생성하도록 예약한다.
+
+    Args:
+        datablock: 프리뷰를 만들 ID 데이터블록.
+        mode: ``'ASSET'``이면 ``asset_generate_preview()``,
+            그 외에는 ``preview_ensure()``를 호출한다.
+    """
+    if datablock is None:
+        return
+    key = (datablock, mode)
+    if key in _pending_previews:
+        return
+    _pending_previews.add(key)
+    if not bpy.app.timers.is_registered(_flush_pending_previews):
+        bpy.app.timers.register(_flush_pending_previews, first_interval=0.0)
+
+
 def draw_layer_icon(layer: "Layer", layout: bpy.types.UILayout):
     match layer.type:
         case 'IMAGE':
@@ -540,7 +578,7 @@ def draw_layer_icon(layer: "Layer", layout: bpy.types.UILayout):
                         icon_value=layer.image.preview.icon_id)
                 else:
                     if layer.image.is_dirty:
-                        layer.image.asset_generate_preview()
+                        request_preview(layer.image, 'ASSET')
                     layout.label(icon_value=get_icon('image'))
         case 'FOLDER':
             layout.prop(layer, "is_expanded", text="", icon_only=True, icon_value=get_icon(

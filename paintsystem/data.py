@@ -1532,7 +1532,7 @@ class Layer(BaseNestedListItem):
             layer = uid_to_layer.get(self.linked_layer_uid)
             if not layer:
                 layer = _get_material_layer_uid_map(self.linked_material, force_refresh=True).get(self.linked_layer_uid)
-            return uid_to_layer.get(self.linked_layer_uid)
+            return layer
         return self
     
     def transfer_linked_data(self):
@@ -1822,7 +1822,9 @@ class Channel(BaseNestedListManager):
     def update_node_tree(self, context:Context):
         if not self.node_tree:
             return
-        _invalidate_material_layer_cache(parse_context(context).active_material)
+        # 레이어가 바뀐 것은 이 채널을 소유한 머티리얼이다. 활성 머티리얼과 다를 수 있으므로 소유자를 무효화한다
+        owner_material = self.id_data
+        _invalidate_material_layer_cache(owner_material if isinstance(owner_material, Material) else None)
         
         self.node_tree.name = f".PS {self.name}"
         if len(self.node_tree.interface.items_tree) == 0:
@@ -2149,23 +2151,25 @@ class Channel(BaseNestedListManager):
             orig_preview_channel = bool(ps_context.ps_mat_data.preview_channel)
             self.isolate_channel(context)
         
+        # 복원 코드가 분기와 무관하게 읽으므로, 변경 대상 프로퍼티는 조건 밖에서 전부 스냅샷한다
+        orig_use_alpha = bool(self.use_alpha)
+        orig_tangent_uv_map = str(self.tangent_uv_map)
+        orig_output_vector_space = str(self.output_vector_space)
+        orig_disable_output_transform = bool(self.disable_output_transform)
+        saved_modifier_states = []
+
         if force_alpha:
-            orig_use_alpha = bool(self.use_alpha)
             self.use_alpha = True
-            
+
         if as_tangent_normal:
-            orig_tangent_uv_map = str(self.tangent_uv_map)
             self.tangent_uv_map = self.bake_uv_map
-            orig_output_vector_space = str(self.output_vector_space)
             self.output_vector_space = "TANGENT"
         else:
-            orig_disable_output_transform = bool(self.disable_output_transform)
             self.disable_output_transform = True
         try:
             ps_objects = ps_context.ps_objects
-            
+
             # Disable deform modifiers if requested
-            saved_modifier_states = []
             if disable_deform_modifiers:
                 DEFORM_MODIFIER_TYPES = {
                     'ARMATURE', 'CAST', 'CURVE', 'DISPLACE', 'HOOK', 'LAPLACIANDEFORM',
@@ -2259,36 +2263,28 @@ class Channel(BaseNestedListManager):
             if from_socket:
                 connect_sockets(surface_socket, from_socket)
             
-            if force_alpha:
-                self.use_alpha = orig_use_alpha
-                
-            if as_tangent_normal:
-                self.tangent_uv_map = orig_tangent_uv_map
-                self.output_vector_space = orig_output_vector_space
-            else:
-                self.disable_output_transform = orig_disable_output_transform
-            
-            if orig_preview_channel:
-                self.isolate_channel(context)
-            
+        except Exception as e:
+            logger.error(f"Error baking channel: {e}")
+        finally:
+            # 성공·실패·조기 return 모두 동일하게 복원. 값이 그대로면 불필요한 update 콜백을 피한다
+            try:
+                if self.use_alpha != orig_use_alpha:
+                    self.use_alpha = orig_use_alpha
+                if self.tangent_uv_map != orig_tangent_uv_map:
+                    self.tangent_uv_map = orig_tangent_uv_map
+                if self.output_vector_space != orig_output_vector_space:
+                    self.output_vector_space = orig_output_vector_space
+                if self.disable_output_transform != orig_disable_output_transform:
+                    self.disable_output_transform = orig_disable_output_transform
+                if orig_preview_channel:
+                    self.isolate_channel(context)
+            except Exception as e:
+                logger.error(f"Error restoring channel settings: {e}")
             # Restore deform modifiers
             for obj, mod_name, orig_show_render in saved_modifier_states:
                 if mod_name in obj.modifiers:
                     obj.modifiers[mod_name].show_render = orig_show_render
-        except Exception as e:
-            logger.error(f"Error baking channel: {e}")
-            try:
-                self.use_alpha = orig_use_alpha
-                self.tangent_uv_map = orig_tangent_uv_map
-                self.output_vector_space = orig_output_vector_space
-                self.disable_output_transform = orig_disable_output_transform
-            except Exception as e:
-                logger.error(f"Error restoring channel settings: {e}")
-            # Restore deform modifiers on error
-            for obj, mod_name, orig_show_render in saved_modifier_states:
-                if mod_name in obj.modifiers:
-                    obj.modifiers[mod_name].show_render = orig_show_render
-        
+
     @property
     def item_type(self):
         return Layer

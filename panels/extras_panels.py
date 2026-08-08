@@ -3,7 +3,7 @@ import bpy
 from bpy.types import NodeTree, Panel, Menu, UILayout, Context
 from bpy.utils import register_classes_factory
 
-from .common import PSContextMixin, draw_layer_icon, get_event_icons, find_keymap, find_keymap_by_name, get_icon_from_channel, scale_content, get_icon
+from .common import PSContextMixin, draw_layer_icon, get_event_icons, find_keymap, find_keymap_by_name, get_icon_from_channel, request_preview, scale_content, get_icon
 from ..utils.version import is_newer_than
 from ..utils.unified_brushes import get_unified_settings
 from ..utils.nodes import is_in_nodetree
@@ -12,6 +12,28 @@ from bl_ui.properties_paint_common import (
     UnifiedPaintPanel,
     brush_settings,
 )
+
+_ALLOWED_PICKER_TYPES = {"CIRCLE_HSV", "CIRCLE_HSL", "SQUARE_SV", "SQUARE_HS", "SQUARE_HV"}
+
+
+def _repair_color_picker_type():
+    try:
+        view = bpy.context.preferences.view
+        if view.color_picker_type not in _ALLOWED_PICKER_TYPES:
+            view.color_picker_type = "CIRCLE_HSV"
+    except (AttributeError, TypeError):
+        pass
+    return None
+
+
+def request_color_picker_repair():
+    """구버전에서 저장된 잘못된 picker enum 값(예: "CIRCLE")을 교정하도록 예약한다.
+
+    draw()에서 직접 대입하면 무한 리드로우를 유발하므로 타이머로 미룬다.
+    """
+    if not bpy.app.timers.is_registered(_repair_color_picker_type):
+        bpy.app.timers.register(_repair_color_picker_type, first_interval=0.0)
+
 
 def nodetree_operator(layout: UILayout, nodetree: NodeTree, text="", icon='ADD'):
     op = layout.operator("node.add_node", text=text, icon=icon)
@@ -242,7 +264,8 @@ def draw_brush_color_settings(layout: UILayout, context: Context):
             icon_id = 0
             txt_ma = ""
             if ma:
-                ma.id_data.preview_ensure()
+                if not ma.id_data.preview:
+                    request_preview(ma.id_data)
                 if ma.id_data.preview:
                     icon_id = ma.id_data.preview.icon_id
                     txt_ma = ma.name
@@ -342,11 +365,9 @@ class MAT_PT_TexPaintRMBMenu(PSContextMixin, Panel, UnifiedPaintPanel):
         show_brush_controls = prefs.preferences.show_brush_settings_rmb if prefs else True
         color_wheel_scale = prefs.preferences.color_picker_scale_rmb if prefs else 1.2
 
-        # Guard against invalid picker enum values saved from older versions (e.g. "CIRCLE")
-        view = context.preferences.view
-        allowed_picker_types = {"CIRCLE_HSV", "CIRCLE_HSL", "SQUARE_SV", "SQUARE_HS", "SQUARE_HV"}
-        if view.color_picker_type not in allowed_picker_types:
-            view.color_picker_type = "CIRCLE_HSV"
+        # 구버전 값(예: "CIRCLE") 감지는 읽기만 하고, 실제 교정은 draw 밖 타이머에서 수행한다.
+        if context.preferences.view.color_picker_type not in _ALLOWED_PICKER_TYPES:
+            request_color_picker_repair()
         
         # Color settings container
         color_box = layout.box()

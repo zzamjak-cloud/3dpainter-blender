@@ -29,6 +29,15 @@ def scale_content(context, layout, scale_x=1.2, scale_y=1.2):
         layout.scale_y = scale_y
     return layout
 
+def is_failed_result(result) -> bool:
+    """process_material 반환값이 실패인지 판정한다.
+    대부분 오퍼레이터 관용대로 set({'FINISHED'}/{'CANCELLED'})을 돌려주지만
+    bool을 돌려주는 구현도 있어 양쪽을 모두 처리한다."""
+    if isinstance(result, set):
+        return 'FINISHED' not in result
+    return not result
+
+
 class MultiMaterialOperator(Operator):
     multiple_objects: BoolProperty(
         name="Multiple Objects",
@@ -59,17 +68,17 @@ class MultiMaterialOperator(Operator):
                         if mat in seen_materials:
                             continue
                         with context.temp_override(object=obj, active_object=obj, selected_objects=[obj], active_material=mat):
-                            error_count += not bool(self.process_material(bpy.context))
+                            error_count += is_failed_result(self.process_material(bpy.context))
                         seen_materials.add(mat)
                 else:
                     if obj.active_material in seen_materials:
                         continue
                     with context.temp_override(object=obj, active_object=obj, selected_objects=[obj], active_material=obj.active_material):
-                        error_count += not bool(self.process_material(bpy.context))
+                        error_count += is_failed_result(self.process_material(bpy.context))
                     seen_materials.add(obj.active_material)
             else:
                 with context.temp_override(object=obj, active_object=obj, selected_objects=[obj]):
-                    error_count += not bool(self.process_material(bpy.context))
+                    error_count += is_failed_result(self.process_material(bpy.context))
         
         if error_count > 0:
             self.report({'WARNING'}, f"Completed with {error_count} error{'s' if error_count > 1 else ''}")

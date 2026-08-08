@@ -2,7 +2,7 @@ import bpy
 
 from .versioning import get_layer_parent_map, migrate_global_layer_data, migrate_blend_mode, migrate_source_node, migrate_socket_names, update_layer_name, update_layer_version, update_library_nodetree_version
 from .context import parse_context
-from .data import sort_actions, get_all_layers, is_valid_uuidv4, iter_all_layers
+from .data import sort_actions, get_all_layers, is_valid_uuidv4, iter_all_layers, _invalidate_material_layer_cache
 from .image import save_image
 from .graph.basic_layers import get_layer_version_for_type
 import time
@@ -107,6 +107,8 @@ def load_paint_system_data():
 
 @bpy.app.handlers.persistent
 def load_post(scene):
+    # 이전 파일의 Material 포인터가 캐시에 남아 있으면 죽은 RNA를 참조하게 된다
+    _invalidate_material_layer_cache()
     ps_scene_data = get_ps_scene_data(bpy.context.scene)
     if not ps_scene_data:
         return
@@ -114,13 +116,19 @@ def load_post(scene):
     load_paint_system_data()
 
 @bpy.app.handlers.persistent
+def undo_redo_post(scene):
+    # 언두/리두는 데이터를 통째로 되돌려 캐시에 담긴 Layer 포인터를 무효화시킨다
+    _invalidate_material_layer_cache()
+
+
+@bpy.app.handlers.persistent
 def save_handler(scene: bpy.types.Scene):
     images = set()
-    
+
     seen_channels = set()
     for _mat, _grp, channel, layer in iter_all_layers():
         # Collect bake images once per channel
-        ch_id = id(channel)
+        ch_id = channel.as_pointer()
         if ch_id not in seen_channels:
             seen_channels.add(ch_id)
             if channel.bake_image and channel.bake_image.is_dirty:
@@ -240,6 +248,8 @@ def brush_color_callback(*args):
 def register():
     bpy.app.handlers.frame_change_pre.append(frame_change_pre)
     bpy.app.handlers.load_post.append(load_post)
+    bpy.app.handlers.undo_post.append(undo_redo_post)
+    bpy.app.handlers.redo_post.append(undo_redo_post)
     bpy.app.handlers.save_pre.append(save_handler)
     bpy.app.handlers.load_post.append(refresh_image)
     bpy.app.handlers.depsgraph_update_post.append(paint_system_object_update)
@@ -268,6 +278,8 @@ def unregister():
     bpy.msgbus.clear_by_owner(owner)
     bpy.app.handlers.frame_change_pre.remove(frame_change_pre)
     bpy.app.handlers.load_post.remove(load_post)
+    bpy.app.handlers.undo_post.remove(undo_redo_post)
+    bpy.app.handlers.redo_post.remove(undo_redo_post)
     bpy.app.handlers.save_pre.remove(save_handler)
     bpy.app.handlers.load_post.remove(refresh_image)
     bpy.app.handlers.depsgraph_update_post.remove(paint_system_object_update)

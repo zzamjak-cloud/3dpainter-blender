@@ -218,72 +218,83 @@ class PAINTSYSTEM_OT_BakeChannel(BakeOperator):
             return {'CANCELLED'}
         # Set cursor to wait
         context.window.cursor_set('WAIT')
-        
-        for mat in bake_materials:
-            # Get the active channel for the material
-            _, _, active_channel, _ = parse_material(mat)
-            self.image_name = f"{mat.name}_Baked"
-            if self.image_resolution != 'CUSTOM':
-                self.image_width = int(self.image_resolution)
-                self.image_height = int(self.image_resolution)
-            bake_image = None
-            if self.as_layer:
-                bake_image = self.create_image(context)
-                bake_image.colorspace_settings.name = 'sRGB'
-                active_channel.bake(
-                    context,
-                    mat,
-                    bake_image,
-                    self.uv_map_name,
-                    force_alpha=True,
-                    as_tangent_normal=self.as_tangent_normal,
-                    use_gpu=self.use_gpu,
-                    margin=self.margin,
-                    margin_type=self.margin_type,
-                    disable_deform_modifiers=self.as_tangent_normal and active_channel.type == 'VECTOR'
-                )
-                active_channel.create_layer(
-                    context, 
-                    layer_name=self.image_name, 
-                    layer_type="IMAGE", 
-                    insert_at="START",
-                    image=bake_image,
-                    coord_type='UV',
-                    uv_map_name=self.uv_map_name
-                )
-            else:
-                bake_image = active_channel.bake_image
-                if not bake_image:
-                    # No bake image exists yet, create one
+
+        # 베이크 중인 채널의 use_bake_image 원래 값. 성공하면 None으로 비운다
+        pending_bake_flag = None
+        try:
+            for mat in bake_materials:
+                # Get the active channel for the material
+                _, _, active_channel, _ = parse_material(mat)
+                self.image_name = f"{mat.name}_Baked"
+                if self.image_resolution != 'CUSTOM':
+                    self.image_width = int(self.image_resolution)
+                    self.image_height = int(self.image_resolution)
+                bake_image = None
+                if self.as_layer:
                     bake_image = self.create_image(context)
-                    active_channel.bake_image = bake_image
-                elif bake_image.size[0] != self.image_width or bake_image.size[1] != self.image_height:
-                    bake_image.scale(self.image_width, self.image_height)
-                bake_image.colorspace_settings.name = 'Non-Color' if active_channel.color_space == 'NONCOLOR' else 'sRGB'
-                active_channel.bake_uv_map = self.uv_map_name
-                    
-                active_channel.use_bake_image = False
-                active_channel.bake(
-                    context,
-                    mat,
-                    bake_image,
-                    self.uv_map_name,
-                    as_tangent_normal=self.as_tangent_normal,
-                    use_gpu=self.use_gpu,
-                    margin=self.margin,
-                    margin_type=self.margin_type,
-                    disable_deform_modifiers=self.as_tangent_normal and active_channel.type == 'VECTOR'
-                )
-                if self.as_tangent_normal:
-                    active_channel.bake_vector_space = 'TANGENT'
+                    bake_image.colorspace_settings.name = 'sRGB'
+                    active_channel.bake(
+                        context,
+                        mat,
+                        bake_image,
+                        self.uv_map_name,
+                        force_alpha=True,
+                        as_tangent_normal=self.as_tangent_normal,
+                        use_gpu=self.use_gpu,
+                        margin=self.margin,
+                        margin_type=self.margin_type,
+                        disable_deform_modifiers=self.as_tangent_normal and active_channel.type == 'VECTOR'
+                    )
+                    active_channel.create_layer(
+                        context,
+                        layer_name=self.image_name,
+                        layer_type="IMAGE",
+                        insert_at="START",
+                        image=bake_image,
+                        coord_type='UV',
+                        uv_map_name=self.uv_map_name
+                    )
                 else:
-                    active_channel.bake_vector_space = active_channel.vector_space
-                active_channel.use_bake_image = True
-        # Return to object mode
-        bpy.ops.object.mode_set(mode="OBJECT")
-        # Set cursor to default
-        context.window.cursor_set('DEFAULT')
-        
+                    bake_image = active_channel.bake_image
+                    if not bake_image:
+                        # No bake image exists yet, create one
+                        bake_image = self.create_image(context)
+                        active_channel.bake_image = bake_image
+                    elif bake_image.size[0] != self.image_width or bake_image.size[1] != self.image_height:
+                        bake_image.scale(self.image_width, self.image_height)
+                    bake_image.colorspace_settings.name = 'Non-Color' if active_channel.color_space == 'NONCOLOR' else 'sRGB'
+                    active_channel.bake_uv_map = self.uv_map_name
+
+                    pending_bake_flag = (active_channel, bool(active_channel.use_bake_image))
+                    active_channel.use_bake_image = False
+                    active_channel.bake(
+                        context,
+                        mat,
+                        bake_image,
+                        self.uv_map_name,
+                        as_tangent_normal=self.as_tangent_normal,
+                        use_gpu=self.use_gpu,
+                        margin=self.margin,
+                        margin_type=self.margin_type,
+                        disable_deform_modifiers=self.as_tangent_normal and active_channel.type == 'VECTOR'
+                    )
+                    if self.as_tangent_normal:
+                        active_channel.bake_vector_space = 'TANGENT'
+                    else:
+                        active_channel.bake_vector_space = active_channel.vector_space
+                    active_channel.use_bake_image = True
+                    pending_bake_flag = None
+            # Return to object mode
+            bpy.ops.object.mode_set(mode="OBJECT")
+        finally:
+            # 실패한 베이크는 완성되지 않은 이미지를 켜면 안 되므로 원래 값으로 되돌린다
+            if pending_bake_flag is not None:
+                pending_channel, original_use_bake_image = pending_bake_flag
+                pending_channel.use_bake_image = original_use_bake_image
+            # 베이크가 실패해도 대기 커서는 반드시 원복한다
+            # Set cursor to default
+            context.window.cursor_set('DEFAULT')
+
         end_time = time.time()
         # report the time taken
         self.report({'INFO'}, f"Baked {len(bake_materials)} materials in {round(end_time - start_time, 2)} seconds")
@@ -316,30 +327,41 @@ class PAINTSYSTEM_OT_BakeAllChannels(BakeOperator):
             return {'CANCELLED'}
         # Set cursor to wait
         context.window.cursor_set('WAIT')
-        
-        if self.image_resolution != 'CUSTOM':
-            self.image_width = int(self.image_resolution)
-            self.image_height = int(self.image_resolution)
-        ps_ctx = self.parse_context(context)
-        for mat in bake_materials:
-            _, active_group, _, _ = parse_material(mat)
-            for channel in active_group.channels:
-                bake_image = channel.bake_image
-                if not bake_image:
-                    self.image_name = f"{active_group.name}_{channel.name}_Baked"
-                    bake_image = self.create_image(context)
-                    channel.bake_image = bake_image
-                elif bake_image.size[0] != self.image_width or bake_image.size[1] != self.image_height:
-                    bake_image.scale(self.image_width, self.image_height)
-                bake_image.colorspace_settings.name = 'Non-Color' if channel.color_space == 'NONCOLOR' else 'sRGB'
-                channel.use_bake_image = False
-                channel.bake_uv_map = self.uv_map_name
-                channel.bake(context, mat, bake_image, self.uv_map_name)
-                channel.use_bake_image = True
-        # Return to object mode
-        bpy.ops.object.mode_set(mode="OBJECT")
-        # Set cursor to default
-        context.window.cursor_set('DEFAULT')
+
+        # 베이크 중인 채널의 use_bake_image 원래 값. 성공하면 None으로 비운다
+        pending_bake_flag = None
+        try:
+            if self.image_resolution != 'CUSTOM':
+                self.image_width = int(self.image_resolution)
+                self.image_height = int(self.image_resolution)
+            ps_ctx = self.parse_context(context)
+            for mat in bake_materials:
+                _, active_group, _, _ = parse_material(mat)
+                for channel in active_group.channels:
+                    bake_image = channel.bake_image
+                    if not bake_image:
+                        self.image_name = f"{active_group.name}_{channel.name}_Baked"
+                        bake_image = self.create_image(context)
+                        channel.bake_image = bake_image
+                    elif bake_image.size[0] != self.image_width or bake_image.size[1] != self.image_height:
+                        bake_image.scale(self.image_width, self.image_height)
+                    bake_image.colorspace_settings.name = 'Non-Color' if channel.color_space == 'NONCOLOR' else 'sRGB'
+                    pending_bake_flag = (channel, bool(channel.use_bake_image))
+                    channel.use_bake_image = False
+                    channel.bake_uv_map = self.uv_map_name
+                    channel.bake(context, mat, bake_image, self.uv_map_name)
+                    channel.use_bake_image = True
+                    pending_bake_flag = None
+            # Return to object mode
+            bpy.ops.object.mode_set(mode="OBJECT")
+        finally:
+            # 실패한 베이크는 완성되지 않은 이미지를 켜면 안 되므로 원래 값으로 되돌린다
+            if pending_bake_flag is not None:
+                pending_channel, original_use_bake_image = pending_bake_flag
+                pending_channel.use_bake_image = original_use_bake_image
+            # 베이크가 실패해도 대기 커서는 반드시 원복한다
+            # Set cursor to default
+            context.window.cursor_set('DEFAULT')
         end_time = time.time()
         # report the time taken
         self.report({'INFO'}, f"Baked {len(bake_materials)} materials in {round(end_time - start_time, 2)} seconds")
@@ -571,35 +593,39 @@ class PAINTSYSTEM_OT_TransferImageLayerUV(BakeOperator):
         active_channel = ps_ctx.active_channel
         active_layer = ps_ctx.active_layer
         if not active_channel:
+            context.window.cursor_set('DEFAULT')
             return {'CANCELLED'}
-        
+
         transferred_image = active_layer.image.copy()
         transferred_image.name = f"{active_layer.image.name}_Transferred"
         
         to_be_enabled_layers = []
-        # Ensure all layers are disabled except the active layer
-        for layer in active_channel.layers:
-            if layer.enabled and layer != active_layer:
-                to_be_enabled_layers.append(layer)
-                layer.enabled = False
-        
         original_blend_mode = get_layer_blend_type(active_layer)
-        set_layer_blend_type(active_layer, 'MIX')
         orig_is_clip = bool(active_layer.is_clip)
-        if active_layer.is_clip:
-            active_layer.is_clip = False
-        active_channel.bake(context, ps_ctx.active_material, transferred_image, self.uv_map_name, use_group_tree=False, force_alpha=True)
-        if active_layer.is_clip != orig_is_clip:
-            active_layer.is_clip = orig_is_clip
-        set_layer_blend_type(active_layer, original_blend_mode)
+        try:
+            # Ensure all layers are disabled except the active layer
+            for layer in active_channel.layers:
+                if layer.enabled and layer != active_layer:
+                    to_be_enabled_layers.append(layer)
+                    layer.enabled = False
+
+            set_layer_blend_type(active_layer, 'MIX')
+            if active_layer.is_clip:
+                active_layer.is_clip = False
+            active_channel.bake(context, ps_ctx.active_material, transferred_image, self.uv_map_name, use_group_tree=False, force_alpha=True)
+        finally:
+            # 베이크가 실패해도 사용자 레이어 상태는 반드시 원복한다
+            if active_layer.is_clip != orig_is_clip:
+                active_layer.is_clip = orig_is_clip
+            set_layer_blend_type(active_layer, original_blend_mode)
+            # Restore the layers
+            for layer in to_be_enabled_layers:
+                layer.enabled = True
+            # Set cursor back to default
+            context.window.cursor_set('DEFAULT')
         active_layer.coord_type = 'UV'
         active_layer.uv_map_name = self.uv_map_name
         active_layer.image = transferred_image
-        # Restore the layers
-        for layer in to_be_enabled_layers:
-            layer.enabled = True
-        # Set cursor back to default
-        context.window.cursor_set('DEFAULT')
         end_time = time.time()
         # report the time taken
         self.report({'INFO'}, f"Transferred image layer UV in {round(end_time - start_time, 2)} seconds")
@@ -642,36 +668,40 @@ class PAINTSYSTEM_OT_ConvertToImageLayer(BakeOperator):
         active_channel = ps_ctx.active_channel
         active_layer = ps_ctx.active_layer
         if not active_channel:
+            context.window.cursor_set('DEFAULT')
             return {'CANCELLED'}
-        
+
         image = self.create_image(context)
-        
+
         children = active_channel.get_children(active_layer.id)
         
         to_be_enabled_layers = []
-        # Ensure all layers are disabled except the active layer
-        for layer in active_channel.layers:
-            if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer not in children:
-                to_be_enabled_layers.append(layer)
-                layer.enabled = False
         original_blend_mode = get_layer_blend_type(active_layer)
-        set_layer_blend_type(active_layer, 'MIX')
         orig_is_clip = bool(active_layer.is_clip)
-        if active_layer.is_clip:
-            active_layer.is_clip = False
-        active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
-        if active_layer.is_clip != orig_is_clip:
-            active_layer.is_clip = orig_is_clip
-        set_layer_blend_type(active_layer, original_blend_mode)
+        try:
+            # Ensure all layers are disabled except the active layer
+            for layer in active_channel.layers:
+                if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer not in children:
+                    to_be_enabled_layers.append(layer)
+                    layer.enabled = False
+            set_layer_blend_type(active_layer, 'MIX')
+            if active_layer.is_clip:
+                active_layer.is_clip = False
+            active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
+        finally:
+            # 베이크가 실패해도 사용자 레이어 상태는 반드시 원복한다
+            if active_layer.is_clip != orig_is_clip:
+                active_layer.is_clip = orig_is_clip
+            set_layer_blend_type(active_layer, original_blend_mode)
+            for layer in to_be_enabled_layers:
+                layer.enabled = True
+            # Set cursor back to default
+            context.window.cursor_set('DEFAULT')
         active_layer.coord_type = 'UV'
         active_layer.uv_map_name = self.uv_map_name
         active_layer.image = image
         active_layer.type = 'IMAGE'
-        for layer in to_be_enabled_layers:
-            layer.enabled = True
         active_channel.remove_children(active_layer.id)
-        # Set cursor back to default
-        context.window.cursor_set('DEFAULT')
         end_time = time.time()
         # report the time taken
         self.report({'INFO'}, f"Converted to image layer in {round(end_time - start_time, 2)} seconds")
@@ -763,48 +793,52 @@ class PAINTSYSTEM_OT_MergeDown(BakeOperator):
         below_layer = self.get_below_layer(context)
         unlinked_layer = ps_ctx.unlinked_layer
         below_unlinked_layer = self.get_below_layer(context, unprocessed=True)
-        
+
         if not active_channel:
+            context.window.cursor_set('DEFAULT')
             return {'CANCELLED'}
         
         image = self.create_image(context)
         
         to_be_enabled_layers = []
-        # Enable both active layer and below layer, disable all others
-        for layer in active_channel.flattened_layers:
-            if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer != below_layer:
-                to_be_enabled_layers.append(layer)
-                layer.enabled = False
-        
-        # Enable the below layer if it's not already enabled
-        if not below_layer.enabled:
-            below_layer.enabled = True
-        
         # Store original blend modes
         original_active_blend_mode = get_layer_blend_type(active_layer)
         original_below_blend_mode = get_layer_blend_type(below_layer)
-        
-        # Set both layers to MIX for proper blending
-        set_layer_blend_type(active_layer, 'MIX')
-        set_layer_blend_type(below_layer, 'MIX')
-        
-        # Bake both layers into the new image
-        active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
-        
-        # Restore original blend modes
-        set_layer_blend_type(active_layer, original_active_blend_mode)
-        set_layer_blend_type(below_layer, original_below_blend_mode)
-        
-        # Restore other layers
-        for layer in to_be_enabled_layers:
-            layer.enabled = True
-        
+
+        try:
+            # Enable both active layer and below layer, disable all others
+            for layer in active_channel.flattened_layers:
+                if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer != below_layer:
+                    to_be_enabled_layers.append(layer)
+                    layer.enabled = False
+
+            # Enable the below layer if it's not already enabled
+            if not below_layer.enabled:
+                below_layer.enabled = True
+
+            # Set both layers to MIX for proper blending
+            set_layer_blend_type(active_layer, 'MIX')
+            set_layer_blend_type(below_layer, 'MIX')
+
+            # Bake both layers into the new image
+            active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
+        finally:
+            # 베이크가 실패해도 사용자 레이어 상태는 반드시 원복한다
+            # Restore original blend modes
+            set_layer_blend_type(active_layer, original_active_blend_mode)
+            set_layer_blend_type(below_layer, original_below_blend_mode)
+
+            # Restore other layers
+            for layer in to_be_enabled_layers:
+                layer.enabled = True
+
+            # Set cursor back to default
+            context.window.cursor_set('DEFAULT')
+
         # Remove the current layer since it's been merged
         apply_merged_image_to_layer(below_unlinked_layer, image, self.uv_map_name)
         active_channel.delete_layer(context, unlinked_layer)
         active_channel.set_active_index_to_layer(context, below_unlinked_layer)
-        # Set cursor back to default
-        context.window.cursor_set('DEFAULT')
         end_time = time.time()
         # report the time taken
         self.report({'INFO'}, f"Merged down in {round(end_time - start_time, 2)} seconds")
@@ -886,45 +920,49 @@ class PAINTSYSTEM_OT_MergeUp(BakeOperator):
         above_unlinked_layer = self.get_above_layer(context, unprocessed=True)
 
         if not active_channel:
+            context.window.cursor_set('DEFAULT')
             return {'CANCELLED'}
 
         image = self.create_image(context)
 
         to_be_enabled_layers = []
-        # Enable both active layer and above layer, disable all others
-        for layer in active_channel.flattened_layers:
-            if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer != above_layer:
-                to_be_enabled_layers.append(layer)
-                layer.enabled = False
-
-        # Ensure the above layer is enabled
-        if not above_layer.enabled:
-            above_layer.enabled = True
-
         # Store original blend modes
         original_active_blend_mode = get_layer_blend_type(active_layer)
         original_above_blend_mode = get_layer_blend_type(above_layer)
 
-        # Set both layers to MIX for proper blending
-        set_layer_blend_type(active_layer, 'MIX')
-        set_layer_blend_type(above_layer, 'MIX')
+        try:
+            # Enable both active layer and above layer, disable all others
+            for layer in active_channel.flattened_layers:
+                if layer.type != "FOLDER" and layer.enabled and layer != active_layer and layer != above_layer:
+                    to_be_enabled_layers.append(layer)
+                    layer.enabled = False
 
-        # Bake both layers into the new image
-        active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
+            # Ensure the above layer is enabled
+            if not above_layer.enabled:
+                above_layer.enabled = True
 
-        # Restore original blend modes
-        set_layer_blend_type(active_layer, original_active_blend_mode)
-        set_layer_blend_type(above_layer, original_above_blend_mode)
+            # Set both layers to MIX for proper blending
+            set_layer_blend_type(active_layer, 'MIX')
+            set_layer_blend_type(above_layer, 'MIX')
 
-        # Restore other layers
-        for layer in to_be_enabled_layers:
-            layer.enabled = True
+            # Bake both layers into the new image
+            active_channel.bake(context, ps_ctx.active_material, image, self.uv_map_name, use_group_tree=False, force_alpha=True)
+        finally:
+            # 베이크가 실패해도 사용자 레이어 상태는 반드시 원복한다
+            # Restore original blend modes
+            set_layer_blend_type(active_layer, original_active_blend_mode)
+            set_layer_blend_type(above_layer, original_above_blend_mode)
+
+            # Restore other layers
+            for layer in to_be_enabled_layers:
+                layer.enabled = True
+
+            # Set cursor back to default
+            context.window.cursor_set('DEFAULT')
 
         apply_merged_image_to_layer(above_unlinked_layer, image, self.uv_map_name)
         active_channel.delete_layer(context, unlinked_layer)
         active_channel.set_active_index_to_layer(context, above_unlinked_layer)
-        # Set cursor back to default
-        context.window.cursor_set('DEFAULT')
         end_time = time.time()
         # report the time taken
         self.report({'INFO'}, f"Merged up in {round(end_time - start_time, 2)} seconds")

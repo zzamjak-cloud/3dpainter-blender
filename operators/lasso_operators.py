@@ -597,7 +597,13 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
         if self._handle is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
             self._handle = None
-        context.area.tag_redraw()
+        # 외부 중단(파일 로드 등)으로 호출되면 area가 없을 수 있다
+        if context.area:
+            context.area.tag_redraw()
+
+    def cancel(self, context):
+        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
+        self._finish_draw(context)
 
     def _commit(self, context):
         return _commit_selection(
@@ -694,7 +700,13 @@ class PAINTSYSTEM_OT_PolyLassoSelect(Operator):
         if self._handle is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
             self._handle = None
-        context.area.tag_redraw()
+        # 외부 중단(파일 로드 등)으로 호출되면 area가 없을 수 있다
+        if context.area:
+            context.area.tag_redraw()
+
+    def cancel(self, context):
+        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
+        self._finish_draw(context)
 
 
 class PAINTSYSTEM_OT_FillSelection(Operator):
@@ -936,7 +948,13 @@ class PAINTSYSTEM_OT_ShapeSelect(Operator):
         if self._handle is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
             self._handle = None
-        context.area.tag_redraw()
+        # 외부 중단(파일 로드 등)으로 호출되면 area가 없을 수 있다
+        if context.area:
+            context.area.tag_redraw()
+
+    def cancel(self, context):
+        # 블렌더가 모달을 강제 종료해도 draw handler가 누수되지 않도록 정리
+        self._finish_draw(context)
 
 
 def _active_tool_id(context) -> str:

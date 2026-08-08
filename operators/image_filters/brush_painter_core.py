@@ -91,6 +91,7 @@ class BrushPainterCore:
         self.random_seed = 42
         self.rotation_bins = 180
         self._rotation_cache = {}
+        self.rotation_cache_limit = 4096
         self.enable_seam_duplication = True
         self._seam_index: Optional[UVSeamIndex] = None
         
@@ -232,15 +233,19 @@ class BrushPainterCore:
         normalized = angle_deg % 360.0
         return int(round((normalized / 360.0) * self.rotation_bins)) % self.rotation_bins
 
-    def _get_rotated_brush_cached(self, brush: np.ndarray, angle_deg: float) -> np.ndarray:
+    def _get_rotated_brush_cached(self, brush: np.ndarray, angle_deg: float, brush_key) -> np.ndarray:
+        # brush_key는 (브러시 인덱스, 크기)처럼 호출부가 아는 안정적 식별자여야 한다.
+        # id(brush)는 임시 배열이 회수되면 재사용돼 엉뚱한 마스크를 돌려줄 수 있다.
         angle_bin = self._quantize_angle(angle_deg)
-        cache_key = (id(brush), angle_bin)
+        cache_key = (brush_key, angle_bin)
         cached = self._rotation_cache.get(cache_key)
         if cached is not None:
             return cached
 
         quantized_angle = (angle_bin / self.rotation_bins) * 360.0
         rotated = self._rotate_mask_bilinear(brush, quantized_angle)
+        if len(self._rotation_cache) >= self.rotation_cache_limit:
+            self._rotation_cache.clear()
         self._rotation_cache[cache_key] = rotated
         return rotated
     
@@ -986,6 +991,7 @@ class BrushPainterCore:
         opacity: float,
         selected_brush: np.ndarray,
         base_brush_size: int,
+        brush_index: int,
     ) -> bool:
         source_state = tile_states[source_tile_num]
         sampled_pixel = source_state.img_blurred[y, x]
@@ -1018,7 +1024,8 @@ class BrushPainterCore:
                       f"bin={angle_bin}/{self.rotation_bins} quantized={(angle_bin/self.rotation_bins)*360:.1f}°")
                 self._debug_rotation_count += 1
         
-        source_rotated = self._get_rotated_brush_cached(selected_brush, brush_angle)
+        source_rotated = self._get_rotated_brush_cached(
+            selected_brush, brush_angle, (brush_index, base_brush_size))
         if source_rotated.size == 0 or float(np.max(source_rotated)) <= 1e-6:
             if DEBUG_CANCEL:
                 logger.debug(f"[CANCEL] pos=({x},{y}) tile={source_tile_num}: "
@@ -1195,7 +1202,8 @@ class BrushPainterCore:
         else:
             duplicate_brush = self._resize_mask_bilinear(selected_brush, target_size_px, target_size_px)
 
-        duplicate_rotated = self._get_rotated_brush_cached(duplicate_brush, duplicate_angle)
+        duplicate_rotated = self._get_rotated_brush_cached(
+            duplicate_brush, duplicate_angle, (brush_index, target_size_px))
         if duplicate_rotated.size == 0 or float(np.max(duplicate_rotated)) <= 1e-6:
             if DEBUG_CANCEL:
                 logger.debug(f"[CANCEL] pos=({x},{y}) tile={source_tile_num} edge[{seam_triggered_edge}]: "
@@ -1355,6 +1363,7 @@ class BrushPainterCore:
                         step_data.opacity,
                         selected_brush,
                         step_data.actual_brush_size,
+                        brush_index,
                     )
                     total_strokes_applied += 1
                     if brush_callback:
