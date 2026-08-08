@@ -379,9 +379,9 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
             pass
         if color is None:
             color = tuple(ip.brush.color)
-        linear = mathutils.Color(color)
-        if hasattr(linear, 'from_srgb_to_scene_linear'):
-            linear = linear.from_srgb_to_scene_linear()
+        # 레이어 이미지는 8bit sRGB — pixels 배열도 sRGB 인코딩 값이므로
+        # 브러시 색(sRGB)을 그대로 쓴다. 리니어로 변환하면 이중 감마로 어두워진다.
+        fill_rgb = mathutils.Color(color)
 
         # 선택 영역: 스텐실(차단 맵)의 반전. 선택이 없으면 전체 채움
         selected = None
@@ -398,7 +398,7 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
         buf = np.empty(w * h * 4, dtype=np.float32)
         img.pixels.foreach_get(buf)
         rgba = buf.reshape(h, w, 4)
-        fill = np.array([linear.r, linear.g, linear.b, 1.0], dtype=np.float32)
+        fill = np.array([fill_rgb.r, fill_rgb.g, fill_rgb.b, 1.0], dtype=np.float32)
         if selected is None:
             rgba[:, :, :] = fill
         else:

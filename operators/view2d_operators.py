@@ -115,6 +115,18 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
         )
 
     def execute(self, context):
+        # 뷰 구성(모드 전환·영역 분할·캔버스 생성)이 undo 스택에 남으면
+        # Ctrl+Z가 페인팅을 지나 셋업까지 되감아 캔버스가 사라지고
+        # 오브젝트 모드로 튕긴다 — 전 과정을 undo에서 제외한다.
+        prefs = bpy.context.preferences.edit
+        prev_undo = prefs.use_global_undo
+        prefs.use_global_undo = False
+        try:
+            return self._execute_impl(context)
+        finally:
+            prefs.use_global_undo = prev_undo
+
+    def _execute_impl(self, context):
         scene = context.scene
         canvas = get_canvas_object(scene)
 
