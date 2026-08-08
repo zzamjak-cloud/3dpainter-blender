@@ -143,15 +143,17 @@ def register() -> None:
             )
 
         # 3DPainter 포크: Ctrl/Cmd+D = 선택 해제 (포토샵과 동일)
-        for _mods in (dict(ctrl=True), dict(oskey=True)):
-            _add_keymap_entry(
-                kc,
-                name=km_name,
-                space_type=space,
-                idname='paint_system.clear_selection',
-                key='D',
-                **_mods,
-            )
+        # Image Paint 키맵 + 3D View 키맵 양쪽에 등록해 모든 뷰에서 동작 보장
+        for _km_name, _km_space in ((km_name, space), ('3D View', 'VIEW_3D')):
+            for _mods in (dict(ctrl=True), dict(oskey=True)):
+                _add_keymap_entry(
+                    kc,
+                    name=_km_name,
+                    space_type=_km_space,
+                    idname='paint_system.clear_selection',
+                    key='D',
+                    **_mods,
+                )
 
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(

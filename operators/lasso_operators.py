@@ -779,7 +779,7 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
 
 
 class PAINTSYSTEM_OT_DeselectOnEmptyClick(Operator):
-    """2D 뷰의 캔버스 밖 빈 공간을 클릭하면 선택을 해제한다 (포토샵과 동일).
+    """빈 공간(캔버스/모델 밖)을 클릭하면 선택을 해제한다 (포토샵과 동일).
     이벤트는 그대로 통과시킨다"""
     bl_idname = "paint_system.deselect_on_empty_click"
     bl_label = "Deselect on Empty Click"
@@ -790,21 +790,26 @@ class PAINTSYSTEM_OT_DeselectOnEmptyClick(Operator):
         return (
             context.mode == 'PAINT_TEXTURE'
             and context.tool_settings.image_paint.use_stencil_layer
-            and get_canvas_object(context.scene) is not None
         )
 
     def invoke(self, context, event):
         space = context.space_data
-        canvas = get_canvas_object(context.scene)
+        region = context.region
         if (
-            space is not None and space.type == 'VIEW_3D'
-            and context.region is not None
-            and _in_canvas_view(space, canvas)
+            space is None or space.type != 'VIEW_3D'
+            or region is None or region.data is None
         ):
-            u, v = _region_to_uv(
-                context, context.region,
-                (event.mouse_region_x, event.mouse_region_y))
+            return {'PASS_THROUGH'}
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        canvas = get_canvas_object(context.scene)
+        if canvas is not None and _in_canvas_view(space, canvas):
+            u, v = _region_to_uv(context, region, coord)
             if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+                bpy.ops.paint_system.clear_selection()
+        else:
+            # 3D 뷰: 활성 메시를 빗나간 클릭이면 해제
+            from .line_operators import _surface_point
+            if _surface_point(context, region, coord) is None:
                 bpy.ops.paint_system.clear_selection()
         return {'PASS_THROUGH'}
 
