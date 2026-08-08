@@ -76,6 +76,20 @@ def _build_canvas_mesh(src_obj: bpy.types.Object, mesh: bpy.types.Mesh) -> None:
     mesh.update()
 
 
+def ensure_composite_shading(context) -> None:
+    """Solid+Texture 셰이딩은 활성 이미지 한 장만 표시해 레이어 합성이 안 보인다.
+    레이어 워크플로에 맞게 Material Preview로 전환한다."""
+    screen = getattr(context, 'screen', None)
+    if screen is None:
+        return
+    for area in screen.areas:
+        if area.type != 'VIEW_3D':
+            continue
+        shading = area.spaces.active.shading
+        if shading.type == 'SOLID' and shading.color_type == 'TEXTURE':
+            shading.type = 'MATERIAL'
+
+
 def get_canvas_object(scene: bpy.types.Scene) -> bpy.types.Object | None:
     name = scene.get(KEY_CANVAS)
     return bpy.data.objects.get(name) if name else None

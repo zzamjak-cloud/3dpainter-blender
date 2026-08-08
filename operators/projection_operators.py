@@ -436,6 +436,8 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
             layer_img.update()
             if hasattr(layer_img, 'update_tag'):
                 layer_img.update_tag()
+            from .view2d_operators import ensure_composite_shading
+            ensure_composite_shading(context)
         finally:
             bpy.data.images.remove(temp)
             bpy.data.images.remove(temp_alpha)

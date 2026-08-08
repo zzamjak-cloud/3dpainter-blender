@@ -135,6 +135,9 @@ class PAINTSYSTEM_OT_NewImage(PSContextMixin, PSImageCreateMixin, MultiMaterialO
             self.image_name = ""
         # 3DPainter 포크: 원클릭 생성 경로 — invoke에서 이름/해상도가 이미 채워져 있음
         if self.image_add_type == 'NEW' and self.skip_dialog:
+            # Solid+Texture 셰이딩이면 새 빈 레이어만 보여 혼란 → 합성 표시로 교정
+            from .view2d_operators import ensure_composite_shading
+            ensure_composite_shading(context)
             return self.execute(context)
         return context.window_manager.invoke_props_dialog(self)
 
