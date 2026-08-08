@@ -487,7 +487,19 @@ class NodeTreeBuilder:
             return self.get_unique_identifier(identifier, counter + 1)
         return check_identifier
 
-    def _create_node(self, identifier: str, node_type: str, properties: dict = None, default_values: dict = None, default_outputs: dict = None, force_properties: bool = False, force_default_values: bool = False) -> None:
+    def _build_identifier_index(self) -> Dict[str, bpy.types.Node]:
+        """self.nodes를 식별자(라벨) 기준으로 색인한다.
+
+        self.nodes의 키는 항상 라벨과 일치하지는 않는다(START/END 리라우트는 node.name,
+        서브그래프는 프레임 이름으로 저장됨). 그래서 dict 키 조회가 아니라 라벨 기준 색인을
+        1회 만들어 쓴다. 먼저 삽입된 노드를 우선하여 기존 선형 탐색(next())과 결과를 맞춘다.
+        """
+        index: Dict[str, bpy.types.Node] = {}
+        for node in self.nodes.values():
+            index.setdefault(self.get_node_identifier(node), node)
+        return index
+
+    def _create_node(self, identifier: str, node_type: str, properties: dict = None, default_values: dict = None, default_outputs: dict = None, force_properties: bool = False, force_default_values: bool = False, existing_by_identifier: Optional[Dict[str, bpy.types.Node]] = None) -> None:
         """
         Creates a node in the graph.
 
@@ -505,7 +517,9 @@ class NodeTreeBuilder:
         Returns:
             The created Blender node object.
         """
-        existing = next((node for node in self.nodes.values() if self.get_node_identifier(node) == identifier), None)
+        if existing_by_identifier is None:
+            existing_by_identifier = self._build_identifier_index()
+        existing = existing_by_identifier.get(identifier)
         node = None
         if existing is not None and getattr(existing, 'bl_idname', None) == node_type:
             node = existing
@@ -630,7 +644,17 @@ class NodeTreeBuilder:
             raise ValueError(
                 "Target must be a NodeTreeBuilder instance or a string representing a node name.")
 
-        self.edges.append(Edge(source, target, source_socket, target_socket))
+        # 완전히 동일한 엣지는 누적하지 않고 기존 것을 대체한다.
+        # create_mixing_graph()가 모디파이어를 추가할 때마다 재호출되어 같은 엣지를 반복 생성하기 때문.
+        # (소스/소켓이 다른 엣지는 그대로 뒤에 쌓여 "나중 링크가 이긴다" 동작이 유지된다)
+        new_edge = Edge(source, target, source_socket, target_socket)
+        for idx, edge in enumerate(self.edges):
+            if edge == new_edge:
+                self.edges[idx] = new_edge
+                self._log(f"Replaced duplicate link: {source} -> {target}")
+                return
+
+        self.edges.append(new_edge)
         self._log(f"Added link: {source} -> {target}")
         
     def unlink(self, source: str, target: str) -> None:
@@ -971,8 +995,11 @@ class NodeTreeBuilder:
         # Add all pre-defined nodes to the tree
         self._log("Adding nodes to the tree")
         start_time_add_nodes = time.time()
+        # 노드마다 self.nodes를 전부 훑지 않도록 식별자 색인을 1회만 만든다.
+        # 루프 중 새로 만들어지는 노드는 식별자가 서로 달라 색인에 없어도 문제되지 않는다.
+        existing_by_identifier = self._build_identifier_index()
         for identifier, command in self.__add_nodes_commands.items():
-            self._create_node(identifier, command.node_type, command.properties, command.default_values, command.default_outputs)
+            self._create_node(identifier, command.node_type, command.properties, command.default_values, command.default_outputs, existing_by_identifier=existing_by_identifier)
         self._log(f"Time taken to add nodes: {time.time() - start_time_add_nodes} seconds")
 
         # Re-apply previously captured state (node-level props and input defaults)
@@ -1061,8 +1088,10 @@ class NodeTreeBuilder:
     def _apply_node_states(self, saved_state: Dict[str, dict]) -> None:
         """Apply captured properties and input defaults to current nodes by identifier."""
         self._log("Applying node state")
+        # 노드 생성 이후 상태이므로 색인을 다시 만든 뒤 state마다 O(1)로 조회한다.
+        node_by_identifier = self._build_identifier_index()
         for identifier, state in saved_state.items():
-            node = next((n for n in self.nodes.values() if self.get_node_identifier(n) == identifier.split('.')[0]), None)
+            node = node_by_identifier.get(identifier.split('.')[0])
             if node is None or isinstance(node, NodeTreeBuilder):
                 self._log(f"Skipping node {identifier}")
                 continue
@@ -1120,28 +1149,35 @@ class NodeTreeBuilder:
                 nodes_to_process.append(name)
                 
         layer_infos: Dict[int, LayerInfo] = {}
-        
+
+        # 노드를 꺼낼 때마다 전체 엣지를 훑지 않도록 역인접(타깃 -> 소스) 목록을 1회만 만든다.
+        # 엣지 순서대로 담아 기존 순회 순서(=배치 좌표)를 그대로 유지한다.
+        incoming_sources: Dict[str, List[str]] = {}
+        for edge in self.edges:
+            incoming_sources.setdefault(str(edge.target), []).append(str(edge.source))
+
         while nodes_to_process:
             self._log(f"Processing nodes: {nodes_to_process}")
             current_node_name = nodes_to_process.pop(0)
             current_level = level_map[current_node_name]
 
             # Find nodes that connect to the current node
-            for edge in self.edges:
-                if str(edge.target) == current_node_name:
-                    source_node_name = str(edge.source)
-                    level_map[source_node_name] = max(
-                        current_level + 1, level_map.get(source_node_name, 1))
-                    if source_node_name not in nodes_to_process and current_node_name != source_node_name:
-                        nodes_to_process.append(source_node_name)
-        
+            for source_node_name in incoming_sources.get(current_node_name, ()):
+                level_map[source_node_name] = max(
+                    current_level + 1, level_map.get(source_node_name, 1))
+                if source_node_name not in nodes_to_process and current_node_name != source_node_name:
+                    nodes_to_process.append(source_node_name)
+
         NODE_MARGIN = 20  # Margin between nodes
-        
+
+        # 레벨 루프 안에서 서브그래프를 매번 선형 탐색하지 않도록 이름 색인을 1회만 만든다.
+        subgraph_by_name = {str(sg): sg for sg in self.sub_graphs}
+
         for name, level in list(level_map.items()):
             if level not in layer_infos:
                 layer_infos[level] = LayerInfo()
 
-            matching_subgraph = next((sg for sg in self.sub_graphs if name == str(sg)), None)
+            matching_subgraph = subgraph_by_name.get(name)
             if matching_subgraph is not None:
                 layer_infos[level].width = max(layer_infos[level].width, matching_subgraph.width)
             else:
