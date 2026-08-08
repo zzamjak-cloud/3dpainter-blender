@@ -21,11 +21,14 @@ def _add_keymap_entry(
     shift: bool = False,
     ctrl: bool = False,
     alt: bool = False,
+    oskey: bool = False,
     repeat: bool = False,
     properties: dict | None = None,
 ):
     km = kc.keymaps.new(name=name, space_type=space_type)
-    kmi = km.keymap_items.new(idname, type=key, value=value, shift=shift, ctrl=ctrl, alt=alt)
+    kmi = km.keymap_items.new(
+        idname, type=key, value=value,
+        shift=shift, ctrl=ctrl, alt=alt, oskey=oskey)
     if repeat:
         kmi.repeat = repeat
     if properties:
@@ -101,16 +104,22 @@ def register() -> None:
                 key='LEFTMOUSE',
             )
 
-        # 3DPainter 포크: Ctrl+Shift+LMB 라쏘 선택 (2D 뷰 전용, poll로 제한)
-        _add_keymap_entry(
-            kc,
-            name=km_name,
-            space_type=space,
-            idname='paint_system.lasso_select',
-            key='LEFTMOUSE',
-            ctrl=True,
-            shift=True,
-        )
+        # 3DPainter 포크: 라쏘 선택 (2D 뷰 전용) — Ctrl/Cmd+Shift+드래그,
+        # +Alt는 선택 제외. 모디파이어 정확 일치라 Alt 변형도 별도 등록.
+        for _mods in (
+            dict(ctrl=True, shift=True),
+            dict(ctrl=True, shift=True, alt=True),
+            dict(oskey=True, shift=True),          # macOS Cmd+Shift
+            dict(oskey=True, shift=True, alt=True),
+        ):
+            _add_keymap_entry(
+                kc,
+                name=km_name,
+                space_type=space,
+                idname='paint_system.lasso_select',
+                key='LEFTMOUSE',
+                **_mods,
+            )
 
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(

@@ -103,28 +103,36 @@ def _apply_stencil(context, mask_img) -> None:
 
 
 class PAINTSYSTEM_OT_LassoSelect(Operator):
-    """2D 뷰에서 라쏘로 선택 영역을 만든다 (Shift=추가, Ctrl=제외)"""
+    """2D 뷰에서 라쏘로 선택 영역을 만든다 (+Alt: 선택에서 제외)"""
     bl_idname = "paint_system.lasso_select"
     bl_label = "Lasso Select"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        if context.mode != 'PAINT_TEXTURE':
-            return False
-        canvas = get_canvas_object(context.scene)
-        space = context.space_data
-        if canvas is None or space is None or space.type != 'VIEW_3D':
-            return False
-        try:
-            return bool(space.local_view) and canvas.local_view_get(space)
-        except (AttributeError, RuntimeError):
-            return False
+        # 2D 뷰 밖에서도 매칭시켜 이벤트를 소비한다 — 조용히 페인팅되는 것 방지
+        return (
+            context.mode == 'PAINT_TEXTURE'
+            and get_canvas_object(context.scene) is not None
+            and context.space_data is not None
+            and context.space_data.type == 'VIEW_3D'
+        )
 
     def invoke(self, context, event):
+        canvas = get_canvas_object(context.scene)
+        space = context.space_data
+        try:
+            in_canvas_view = bool(space.local_view) and canvas.local_view_get(space)
+        except (AttributeError, RuntimeError):
+            in_canvas_view = False
+        if not in_canvas_view:
+            self.report({'WARNING'}, "라쏘 선택은 2D 뷰에서 사용하세요 (v1 제약)")
+            return {'CANCELLED'}
+        self._region_ptr = context.region.as_pointer()
         self._points = [(event.mouse_region_x, event.mouse_region_y)]
-        # 시작 시점의 모디파이어로 합성 모드 결정
-        self._mode = 'ADD' if event.shift else ('SUBTRACT' if event.ctrl else 'REPLACE')
+        # 트리거 콤보에 Ctrl/Shift가 포함되므로 Alt만 합성 모드 판정에 사용:
+        # 기본 = 새 선택(REPLACE), +Alt = 기존 선택에서 제외(SUBTRACT)
+        self._mode = 'SUBTRACT' if event.alt else 'REPLACE'
         self._handle = bpy.types.SpaceView3D.draw_handler_add(
             self._draw, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
@@ -147,16 +155,27 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
         return {'RUNNING_MODAL'}
 
     def _draw(self, context):
+        # 다른 3D 뷰포트에 잘못 그려지지 않도록 시작한 리전에서만 그린다
+        region = bpy.context.region
+        if region is None or region.as_pointer() != self._region_ptr:
+            return
         if len(self._points) < 2:
             return
-        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        # macOS Metal에서 LINE_LOOP + line_width가 불안정해 POLYLINE 셰이더 사용
+        coords = [(p[0], p[1], 0.0) for p in self._points]
+        coords.append(coords[0])  # 루프 닫기
         gpu.state.blend_set('ALPHA')
-        gpu.state.line_width_set(2.0)
-        batch = batch_for_shader(
-            shader, 'LINE_LOOP', {"pos": self._points})
-        shader.uniform_float("color", (1.0, 1.0, 1.0, 0.8))
+        try:
+            shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
+            shader.uniform_float("viewportSize", (region.width, region.height))
+            shader.uniform_float("lineWidth", 2.0)
+            shader.uniform_float("color", (1.0, 1.0, 1.0, 0.9))
+        except (ValueError, KeyError):
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
+            shader.uniform_float("color", (1.0, 1.0, 1.0, 0.9))
         batch.draw(shader)
-        gpu.state.line_width_set(1.0)
         gpu.state.blend_set('NONE')
 
     def _finish_draw(self, context):

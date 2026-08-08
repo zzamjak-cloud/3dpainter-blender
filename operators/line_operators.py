@@ -69,6 +69,8 @@ class PAINTSYSTEM_OT_LineStroke(Operator):
         region = context.region
         if region is None:
             return {'CANCELLED'}
+        # 펜이면 클릭 시점의 필압을 따라간다 — 항상 1.0이면 평소 스트로크보다 굵어 보임
+        self._pressure = float(getattr(event, 'pressure', 1.0)) or 1.0
         end = (float(event.mouse_region_x), float(event.mouse_region_y))
         start = _get_anchor(region)
 
@@ -101,7 +103,7 @@ class PAINTSYSTEM_OT_LineStroke(Operator):
                 "mouse": (x, y),
                 "mouse_event": (x, y),
                 "pen_flip": False,
-                "pressure": 1.0,
+                "pressure": self._pressure,
                 "size": size,
                 "time": float(i) * 0.01,
                 "is_start": i == 0,
