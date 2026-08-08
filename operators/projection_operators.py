@@ -377,10 +377,26 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
         canvas[cy0:cy1, cx0:cx1] = resized[
             cy0 - dy0:cy1 - dy0, cx0 - dx0:cx1 - dx0]
 
+        # project_image는 소스 알파를 보존하지 않아 투명 영역이 검게 칠해진다.
+        # → RGB용(알파 1 강제)과 알파용(알파를 RGB로 복제) 두 장으로 나눠
+        #   같은 카메라로 각각 투사한 뒤 결합한다.
+        alpha_ch = canvas[:, :, 3].copy()
+        rgb_np = canvas.copy()
+        rgb_np[:, :, 3] = 1.0
+        alpha_np = np.empty_like(canvas)
+        alpha_np[:, :, 0] = alpha_ch
+        alpha_np[:, :, 1] = alpha_ch
+        alpha_np[:, :, 2] = alpha_ch
+        alpha_np[:, :, 3] = 1.0
+
         temp = bpy.data.images.new(
             "PS Projection Temp", width=rw, height=rh, alpha=True)
-        temp.pixels.foreach_set(canvas.ravel())
+        temp.pixels.foreach_set(rgb_np.ravel())
         temp.update()
+        temp_alpha = bpy.data.images.new(
+            "PS Projection Temp Alpha", width=rw, height=rh, alpha=True)
+        temp_alpha.pixels.foreach_set(alpha_np.ravel())
+        temp_alpha.update()
 
         try:
             # 2. 신규 레이어 생성 (현재 캔버스 해상도)
@@ -397,17 +413,32 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
                 context, layer_name=f"Projection {self._item.name}",
                 layer_type='IMAGE', image=layer_img, insert_at='TOP',
                 coord_type=coord_type, uv_map_name=uv_map_name)
-            # 새 레이어를 페인트 캔버스로 확정
-            ip.canvas = layer_img
-
             # 3. 네이티브 투사 — project_image는 씬 카메라 기준이므로
-            # 현재 뷰포트와 일치하는 임시 카메라를 만들어 투사한다
-            self._project_from_view(context, temp, rw, rh)
+            # 현재 뷰포트와 일치하는 임시 카메라를 만들어 RGB/알파를 각각 투사
+            scratch = bpy.data.images.new(
+                "PS Projection Scratch", width=lw, height=lh, alpha=True)
+            try:
+                self._project_from_view(
+                    context, [(layer_img, temp), (scratch, temp_alpha)], rw, rh)
+
+                # 4. 알파 결합: 투사된 알파(스크래치의 R)를 레이어 알파로
+                lb = np.empty(lw * lh * 4, dtype=np.float32)
+                layer_img.pixels.foreach_get(lb)
+                lb = lb.reshape(lh, lw, 4)
+                sb = np.empty(lw * lh * 4, dtype=np.float32)
+                scratch.pixels.foreach_get(sb)
+                lb[:, :, 3] = sb.reshape(lh, lw, 4)[:, :, 0]
+                layer_img.pixels.foreach_set(lb.ravel())
+            finally:
+                bpy.data.images.remove(scratch)
+
+            ip.canvas = layer_img
             layer_img.update()
             if hasattr(layer_img, 'update_tag'):
                 layer_img.update_tag()
         finally:
             bpy.data.images.remove(temp)
+            bpy.data.images.remove(temp_alpha)
 
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
@@ -416,8 +447,8 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
         return {'FINISHED'}
 
     @staticmethod
-    def _project_from_view(context, temp_img, rw: int, rh: int) -> None:
-        """현재 뷰포트와 동일한 임시 카메라로 project_image를 실행한다."""
+    def _project_from_view(context, jobs, rw: int, rh: int) -> None:
+        """현재 뷰포트와 동일한 임시 카메라로 (캔버스, 소스) 쌍을 차례로 투사한다."""
         import math
 
         scene = context.scene
@@ -447,8 +478,11 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
         render.resolution_x = rw
         render.resolution_y = rh
         render.resolution_percentage = 100
+        ip = context.tool_settings.image_paint
         try:
-            bpy.ops.paint.project_image(image=temp_img.name)
+            for canvas_img, src_img in jobs:
+                ip.canvas = canvas_img
+                bpy.ops.paint.project_image(image=src_img.name)
         finally:
             scene.camera = prev[0]
             render.resolution_x = prev[1]
