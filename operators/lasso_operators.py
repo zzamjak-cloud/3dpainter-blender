@@ -8,6 +8,9 @@
 
 import sys
 import math
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Optional
 
 import gpu
 import numpy as np
@@ -194,7 +197,6 @@ def _mask_boundary_world_points(obj, masked: np.ndarray, w: int, h: int,
     3D 위치를 구하고, z-파이팅 방지를 위해 페이스 노멀 방향으로 살짝 띄운다.
     """
     from mathutils import Vector
-    from mathutils.bvhtree import BVHTree
     from mathutils.geometry import barycentric_transform
 
     sel = masked < 0.5
@@ -213,29 +215,10 @@ def _mask_boundary_world_points(obj, masked: np.ndarray, w: int, h: int,
     us = (xs[::stride] + 0.5) / w
     vs = (ys[::stride] + 0.5) / h
 
-    mesh = obj.data
-    uv_layer = mesh.uv_layers.active
-    if uv_layer is None:
+    cache = _get_mesh_uv_cache(obj, want_bvh=True)
+    if cache is None or cache.bvh is None:
         return []
-    mesh.calc_loop_triangles()
-    n_loops = len(mesh.loops)
-    loop_v = np.empty(n_loops, dtype=np.int32)
-    mesh.loops.foreach_get('vertex_index', loop_v)
-    co = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
-    mesh.vertices.foreach_get('co', co)
-    co = co.reshape(-1, 3)
-    uvs = np.empty(n_loops * 2, dtype=np.float32)
-    uv_layer.data.foreach_get('uv', uvs)
-    uvs = uvs.reshape(-1, 2)
-    n_tris = len(mesh.loop_triangles)
-    tl = np.empty(n_tris * 3, dtype=np.int32)
-    mesh.loop_triangles.foreach_get('loops', tl)
-    tl = tl.reshape(-1, 3)
-
-    # UV 공간 BVH: 정점 = (u, v, 0)
-    verts_uv = [(float(u), float(v), 0.0) for u, v in uvs]
-    polys = [tuple(int(i) for i in tri) for tri in tl]
-    bvh = BVHTree.FromPolygons(verts_uv, polys, all_triangles=True)
+    loop_v, co, uvs, tl, bvh = cache.loop_v, cache.co, cache.uvs, cache.tl, cache.bvh
 
     mw = obj.matrix_world
     eps = max(obj.dimensions.length, 1e-3) * 0.002
@@ -278,28 +261,46 @@ def _active_image_size(context) -> tuple[int, int]:
 
 
 def _rasterize_polygon(width: int, height: int, uv_points) -> np.ndarray:
-    """UV 폴리곤 내부를 1로 채운 (H, W) float 마스크 — 짝홀 스캔라인."""
+    """UV 폴리곤 내부를 1로 채운 (H, W) float 마스크 — 짝홀 스캔라인.
+
+    행×엣지 교차 x를 (H, N) 패딩 배열로 모은 뒤 행별 sort로 채운다.
+    """
     mask = np.zeros((height, width), dtype=np.float32)
-    pts = [(u * width, v * height) for u, v in uv_points]
-    n = len(pts)
-    if n < 3:
+    if len(uv_points) < 3:
         return mask
-    ys = [p[1] for p in pts]
-    y0 = max(int(min(ys)), 0)
-    y1 = min(int(max(ys)) + 1, height)
-    for y in range(y0, y1):
-        cy = y + 0.5
-        xs = []
-        for i in range(n):
-            ax, ay = pts[i]
-            bx, by = pts[(i + 1) % n]
-            if (ay <= cy < by) or (by <= cy < ay):
-                t = (cy - ay) / (by - ay)
-                xs.append(ax + t * (bx - ax))
-        xs.sort()
-        for j in range(0, len(xs) - 1, 2):
-            xa = max(int(np.ceil(xs[j] - 0.5)), 0)
-            xb = min(int(np.floor(xs[j + 1] - 0.5)) + 1, width)
+    pts = np.asarray(
+        [(u * width, v * height) for u, v in uv_points], dtype=np.float32)
+    n = pts.shape[0]
+    y_coords = pts[:, 1]
+    y0 = max(int(np.floor(y_coords.min())), 0)
+    y1 = min(int(np.ceil(y_coords.max())) + 1, height)
+    if y1 <= y0:
+        return mask
+
+    rows = np.arange(y0, y1, dtype=np.float32)
+    cy = rows + 0.5
+    # 엣지 끝점
+    a = pts
+    b = np.roll(pts, -1, axis=0)
+    ay, by = a[:, 1], b[:, 1]
+    ax, bx = a[:, 0], b[:, 0]
+    # (H', N): 각 행·엣지 교차 여부
+    crosses = ((ay[None, :] <= cy[:, None]) & (cy[:, None] < by[None, :])) | (
+        (by[None, :] <= cy[:, None]) & (cy[:, None] < ay[None, :]))
+    denom = by - ay
+    safe = np.where(np.abs(denom) < 1e-12, 1.0, denom)
+    t = (cy[:, None] - ay[None, :]) / safe[None, :]
+    x_hit = ax[None, :] + t * (bx - ax)[None, :]
+    # 교차하지 않는 칸은 +inf로 채워 sort 후 짝홀 fill
+    x_hit = np.where(crosses, x_hit, np.inf).astype(np.float32)
+    x_sorted = np.sort(x_hit, axis=1)
+
+    for i, y in enumerate(range(y0, y1)):
+        row = x_sorted[i]
+        valid = row[np.isfinite(row)]
+        for j in range(0, len(valid) - 1, 2):
+            xa = max(int(np.ceil(valid[j] - 0.5)), 0)
+            xb = min(int(np.floor(valid[j + 1] - 0.5)) + 1, width)
             if xb > xa:
                 mask[y, xa:xb] = 1.0
     return mask
@@ -316,6 +317,86 @@ def _dilate3(m: np.ndarray) -> np.ndarray:
 
 
 _uv_shader_cache = {}
+
+
+@dataclass
+class _MeshUVCache:
+    key: tuple
+    loop_v: np.ndarray
+    co: np.ndarray
+    uvs: np.ndarray
+    tl: np.ndarray
+    bvh: object = None
+    batch: object = None
+    batch_shader_id: int = 0
+
+
+# obj.as_pointer() → cache, LRU 최대 2개
+_mesh_uv_cache: OrderedDict = OrderedDict()
+_MESH_UV_CACHE_LIMIT = 2
+
+
+def _mesh_uv_cache_key(obj) -> Optional[tuple]:
+    mesh = obj.data
+    uv_layer = mesh.uv_layers.active
+    if uv_layer is None:
+        return None
+    mesh.calc_loop_triangles()
+    return (
+        obj.as_pointer(),
+        len(mesh.vertices),
+        len(mesh.loops),
+        uv_layer.name,
+        len(mesh.loop_triangles),
+    )
+
+
+def _get_mesh_uv_cache(obj, *, want_bvh: bool = False, shader=None) -> Optional[_MeshUVCache]:
+    """메시 UV 추출·BVH·GPU 배치를 키 단위로 캐시한다."""
+    key = _mesh_uv_cache_key(obj)
+    if key is None:
+        return None
+    obj_ptr = key[0]
+    cache = _mesh_uv_cache.get(obj_ptr)
+    if cache is not None and cache.key == key:
+        _mesh_uv_cache.move_to_end(obj_ptr)
+    else:
+        mesh = obj.data
+        uv_layer = mesh.uv_layers.active
+        n_loops = len(mesh.loops)
+        loop_v = np.empty(n_loops, dtype=np.int32)
+        mesh.loops.foreach_get('vertex_index', loop_v)
+        co = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+        mesh.vertices.foreach_get('co', co)
+        co = co.reshape(-1, 3)
+        uvs = np.empty(n_loops * 2, dtype=np.float32)
+        uv_layer.data.foreach_get('uv', uvs)
+        uvs = uvs.reshape(-1, 2)
+        n_tris = len(mesh.loop_triangles)
+        tl = np.empty(n_tris * 3, dtype=np.int32)
+        mesh.loop_triangles.foreach_get('loops', tl)
+        tl = tl.reshape(-1, 3)
+        cache = _MeshUVCache(
+            key=key, loop_v=loop_v, co=co, uvs=uvs, tl=tl)
+        _mesh_uv_cache[obj_ptr] = cache
+        _mesh_uv_cache.move_to_end(obj_ptr)
+        while len(_mesh_uv_cache) > _MESH_UV_CACHE_LIMIT:
+            _mesh_uv_cache.popitem(last=False)
+
+    if want_bvh and cache.bvh is None:
+        from mathutils.bvhtree import BVHTree
+        verts_uv = [(float(u), float(v), 0.0) for u, v in cache.uvs]
+        polys = [tuple(int(i) for i in tri) for tri in cache.tl]
+        cache.bvh = BVHTree.FromPolygons(verts_uv, polys, all_triangles=True)
+
+    if shader is not None:
+        sid = id(shader)
+        if cache.batch is None or cache.batch_shader_id != sid:
+            cache.batch = batch_for_shader(
+                shader, 'TRIS',
+                {"pos": cache.co[cache.loop_v[cache.tl]], "uv": cache.uvs[cache.tl]})
+            cache.batch_shader_id = sid
+    return cache
 
 
 def _get_uv_shader():
@@ -341,26 +422,8 @@ def _get_uv_shader():
 
 def _mesh_uv_batch(obj, shader):
     """오브젝트의 삼각화된 (pos, uv) 배치를 만든다."""
-    mesh = obj.data
-    uv_layer = mesh.uv_layers.active
-    if uv_layer is None:
-        return None
-    mesh.calc_loop_triangles()
-    n_loops = len(mesh.loops)
-    loop_v = np.empty(n_loops, dtype=np.int32)
-    mesh.loops.foreach_get('vertex_index', loop_v)
-    co = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
-    mesh.vertices.foreach_get('co', co)
-    co = co.reshape(-1, 3)
-    uvs = np.empty(n_loops * 2, dtype=np.float32)
-    uv_layer.data.foreach_get('uv', uvs)
-    uvs = uvs.reshape(-1, 2)
-    n_tris = len(mesh.loop_triangles)
-    tl = np.empty(n_tris * 3, dtype=np.int32)
-    mesh.loop_triangles.foreach_get('loops', tl)
-    return batch_for_shader(
-        shader, 'TRIS',
-        {"pos": co[loop_v[tl]], "uv": uvs[tl]})
+    cache = _get_mesh_uv_cache(obj, shader=shader)
+    return None if cache is None else cache.batch
 
 
 def _poly_from_3d_view(context, region, points, w: int, h: int):
