@@ -99,6 +99,9 @@ def _uint8_to_image(img, arr: np.ndarray) -> None:
     f = np.flipud(arr.astype(np.float32) / 255.0)
     img.pixels.foreach_set(f.ravel())
     img.update()
+    # GPU 텍스처 재업로드 통지 (라이브 동기화 시 즉시 반영)
+    if hasattr(img, 'update_tag'):
+        img.update_tag()
 
 
 def _psd_layer_canvas_pixels(psd, layer) -> np.ndarray:

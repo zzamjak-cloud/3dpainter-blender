@@ -405,6 +405,13 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
             rgba[selected] = fill
         img.pixels.foreach_set(rgba.ravel())
         img.update()
+        # 뎁스그래프에 변경을 통지해야 EEVEE가 GPU 텍스처를 재업로드한다
+        # (없으면 다음 뎁스그래프 자극 때까지 2D/3D 뷰 갱신이 밀린다)
+        if hasattr(img, 'update_tag'):
+            img.update_tag()
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
         return {'FINISHED'}
 
 
