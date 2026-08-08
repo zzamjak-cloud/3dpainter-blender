@@ -5,6 +5,7 @@ import math
 
 import bpy
 from bpy.types import Operator
+from bpy_extras import view3d_utils
 
 # 마지막 스트로크 시작점(앵커). (region 포인터, x, y) — 다른 리전에서는 무효 처리
 _anchor: tuple[int, float, float] | None = None
@@ -36,6 +37,28 @@ def _brush_step_px(context) -> tuple[float, float]:
     # 네이티브 스트로크의 스탬프 간격은 지름 기준 퍼센트다.
     # 반지름 기준으로 계산하면 2배 촘촘해져 알파가 누적돼 선이 굵어 보인다.
     return float(size), max(1.0, float(size) * 2.0 * spacing / 100.0)
+
+
+def _surface_point(context, region, coord):
+    """리전 좌표에서 활성 오브젝트 표면의 월드 좌표를 레이캐스트로 구한다.
+
+    스트로크 요소의 location이 정확해야 블렌더가 브러시 화면 반경을
+    올바른 깊이 기준으로 월드 반경으로 변환한다 — (0,0,0)을 넣으면
+    카메라 줌에 따라 선 두께가 널뛴다.
+    """
+    obj = context.view_layer.objects.active
+    if obj is None or obj.type != 'MESH':
+        return None
+    rv3d = region.data
+    origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+    direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+    mw_inv = obj.matrix_world.inverted()
+    local_origin = mw_inv @ origin
+    local_dir = (mw_inv.to_3x3() @ direction).normalized()
+    hit, loc, _normal, _idx = obj.ray_cast(local_origin, local_dir)
+    if not hit:
+        return None
+    return obj.matrix_world @ loc
 
 
 class PAINTSYSTEM_OT_RecordStrokeAnchor(Operator):
@@ -99,20 +122,26 @@ class PAINTSYSTEM_OT_LineStroke(Operator):
         } - {'rna_type'}
         stroke = []
         for i, (x, y) in enumerate(points):
+            # 표면을 벗어난 도장은 건너뛴다 (선이 오브젝트 밖으로 나간 구간)
+            loc = _surface_point(context, region, (x, y))
+            if loc is None:
+                continue
             element = {
                 "name": "",
-                "location": (0.0, 0.0, 0.0),
+                "location": tuple(loc),
                 "mouse": (x, y),
                 "mouse_event": (x, y),
                 "pen_flip": False,
                 "pressure": self._pressure,
                 "size": size,
                 "time": float(i) * 0.01,
-                "is_start": i == 0,
+                "is_start": len(stroke) == 0,
                 "x_tilt": 0.0,
                 "y_tilt": 0.0,
             }
             stroke.append({k: v for k, v in element.items() if k in allowed})
+        if not stroke:
+            return {'CANCELLED'}
         try:
             bpy.ops.paint.image_paint(stroke=stroke, mode='NORMAL')
         except RuntimeError:
