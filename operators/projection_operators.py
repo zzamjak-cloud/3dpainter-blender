@@ -143,6 +143,29 @@ class PAINTSYSTEM_OT_ProjectionImport(Operator):
         return {'FINISHED'}
 
 
+class PAINTSYSTEM_OT_ProjectionSelect(Operator):
+    """투사 이미지를 선택한다 (그리드 썸네일 클릭)"""
+    bl_idname = "paint_system.projection_select"
+    bl_label = "Select Projection Image"
+    bl_options = {'INTERNAL'}
+
+    index: IntProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        # 호버 툴팁 = 이미지 이름
+        items = context.scene.ps_projection_textures
+        if 0 <= properties.index < len(items):
+            return items[properties.index].name
+        return ""
+
+    def execute(self, context):
+        scene = context.scene
+        if 0 <= self.index < len(scene.ps_projection_textures):
+            scene.ps_projection_active_index = self.index
+        return {'FINISHED'}
+
+
 class PAINTSYSTEM_OT_ProjectionRemove(Operator):
     """선택한 투사 이미지를 목록에서 제거한다"""
     bl_idname = "paint_system.projection_remove"
@@ -437,6 +460,7 @@ def _autoreload_timer():
 classes = (
     PSProjectionTexItem,
     PAINTSYSTEM_OT_ProjectionImport,
+    PAINTSYSTEM_OT_ProjectionSelect,
     PAINTSYSTEM_OT_ProjectionRemove,
     PAINTSYSTEM_OT_ProjectionPlace,
 )
