@@ -19,7 +19,8 @@ from .view2d_operators import get_canvas_object, get_source_object
 MASK_IMAGE_NAME = "PS Selection Mask"
 
 # 커밋 후에도 유지되는 선택 윤곽선 (세션 한정)
-_outline = {"polys": [], "handle": None}
+# polys: 2D 캔버스 뷰용 UV 폴리곤, points3d: 3D 뷰용 표면 경계점(월드)
+_outline = {"polys": [], "points3d": [], "handle": None, "handle3d": None}
 
 
 def _draw_polyline(region, coords, color) -> None:
@@ -132,20 +133,125 @@ def _outline_draw():
         _draw_marching_ants(coords)
 
 
+def _outline_draw_3d():
+    """3D 뷰(캔버스 뷰 제외)에 선택 경계를 표면 위 점선(도트)으로 그린다."""
+    pts = _outline["points3d"]
+    if not pts:
+        return
+    ctx = bpy.context
+    space = ctx.space_data
+    scene = ctx.scene
+    if space is None or getattr(space, 'type', None) != 'VIEW_3D' or scene is None:
+        return
+    canvas = get_canvas_object(scene)
+    if canvas is not None and _in_canvas_view(space, canvas):
+        return  # 2D 캔버스 뷰는 전용 점선이 담당
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.depth_test_set('LESS_EQUAL')
+    gpu.state.blend_set('ALPHA')
+    for size, color in ((4.0, (0.0, 0.0, 0.0, 1.0)), (2.0, (1.0, 1.0, 1.0, 1.0))):
+        gpu.state.point_size_set(size)
+        batch = batch_for_shader(shader, 'POINTS', {"pos": pts})
+        shader.uniform_float("color", color)
+        batch.draw(shader)
+    gpu.state.point_size_set(1.0)
+    gpu.state.blend_set('NONE')
+    gpu.state.depth_test_set('NONE')
+
+
 def _outline_ensure_handler() -> None:
     if _outline["handle"] is None:
         _outline["handle"] = bpy.types.SpaceView3D.draw_handler_add(
             _outline_draw, (), 'WINDOW', 'POST_PIXEL')
+    if _outline["handle3d"] is None:
+        _outline["handle3d"] = bpy.types.SpaceView3D.draw_handler_add(
+            _outline_draw_3d, (), 'WINDOW', 'POST_VIEW')
 
 
 def _outline_clear() -> None:
-    if _outline["handle"] is not None:
-        try:
-            bpy.types.SpaceView3D.draw_handler_remove(_outline["handle"], 'WINDOW')
-        except ValueError:
-            pass
-        _outline["handle"] = None
+    for key in ("handle", "handle3d"):
+        if _outline[key] is not None:
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(_outline[key], 'WINDOW')
+            except ValueError:
+                pass
+            _outline[key] = None
     _outline["polys"].clear()
+    _outline["points3d"] = []
+
+
+def _mask_boundary_world_points(obj, masked: np.ndarray, w: int, h: int,
+                                cap: int = 4000) -> list:
+    """마스크(차단 맵) 경계 텍셀을 오브젝트 표면의 월드 좌표로 역매핑한다.
+
+    UV 공간에 삼각형 BVH를 만들어 경계 UV → 포함 삼각형 → 무게중심 변환으로
+    3D 위치를 구하고, z-파이팅 방지를 위해 페이스 노멀 방향으로 살짝 띄운다.
+    """
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    from mathutils.geometry import barycentric_transform
+
+    sel = masked < 0.5
+    if not sel.any():
+        return []
+    er = sel.copy()
+    er[1:, :] &= sel[:-1, :]
+    er[:-1, :] &= sel[1:, :]
+    er[:, 1:] &= sel[:, :-1]
+    er[:, :-1] &= sel[:, 1:]
+    edge = sel & ~er
+    ys, xs = np.nonzero(edge)
+    if len(xs) == 0:
+        return []
+    stride = max(1, len(xs) // cap)
+    us = (xs[::stride] + 0.5) / w
+    vs = (ys[::stride] + 0.5) / h
+
+    mesh = obj.data
+    uv_layer = mesh.uv_layers.active
+    if uv_layer is None:
+        return []
+    mesh.calc_loop_triangles()
+    n_loops = len(mesh.loops)
+    loop_v = np.empty(n_loops, dtype=np.int32)
+    mesh.loops.foreach_get('vertex_index', loop_v)
+    co = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get('co', co)
+    co = co.reshape(-1, 3)
+    uvs = np.empty(n_loops * 2, dtype=np.float32)
+    uv_layer.data.foreach_get('uv', uvs)
+    uvs = uvs.reshape(-1, 2)
+    n_tris = len(mesh.loop_triangles)
+    tl = np.empty(n_tris * 3, dtype=np.int32)
+    mesh.loop_triangles.foreach_get('loops', tl)
+    tl = tl.reshape(-1, 3)
+
+    # UV 공간 BVH: 정점 = (u, v, 0)
+    verts_uv = [(float(u), float(v), 0.0) for u, v in uvs]
+    polys = [tuple(int(i) for i in tri) for tri in tl]
+    bvh = BVHTree.FromPolygons(verts_uv, polys, all_triangles=True)
+
+    mw = obj.matrix_world
+    eps = max(obj.dimensions.length, 1e-3) * 0.002
+    out = []
+    for u, v in zip(us, vs):
+        p = Vector((float(u), float(v), 0.0))
+        _loc, _n, idx, dist = bvh.find_nearest(p, 0.05)
+        if idx is None:
+            continue
+        l0, l1, l2 = tl[idx]
+        a3 = Vector((uvs[l0][0], uvs[l0][1], 0.0))
+        b3 = Vector((uvs[l1][0], uvs[l1][1], 0.0))
+        c3 = Vector((uvs[l2][0], uvs[l2][1], 0.0))
+        pa = Vector(co[loop_v[l0]])
+        pb = Vector(co[loop_v[l1]])
+        pc = Vector(co[loop_v[l2]])
+        pos = barycentric_transform(p, a3, b3, c3, pa, pb, pc)
+        normal = (pb - pa).cross(pc - pa)
+        if normal.length > 1e-9:
+            pos = pos + normal.normalized() * eps
+        out.append(tuple(mw @ pos))
+    return out
 
 
 def _region_to_uv(context, region, coord) -> tuple[float, float]:
@@ -407,16 +513,28 @@ def _commit_selection(op, context, region, screen_points, mode):
     _set_masked_map(mask_img, masked)
     _apply_stencil(context, mask_img)
 
-    # 선택 윤곽선(점선)은 UV 좌표가 확정되는 2D 캔버스 뷰에서만 유지 표시
+    # 선택 윤곽선: 2D 캔버스 뷰는 UV 폴리곤 점선, 3D 뷰는 표면 경계 도트
     if uv_points is not None:
         if mode == 'REPLACE':
             _outline["polys"] = [(mode, uv_points)]
         else:
             _outline["polys"].append((mode, uv_points))
-        _outline_ensure_handler()
     elif mode == 'REPLACE':
         _outline["polys"].clear()
-    context.area.tag_redraw()
+    target = (get_source_object(context.scene) if in_canvas
+              else context.view_layer.objects.active)
+    if (target is None or target.type != 'MESH') and not in_canvas:
+        target = get_source_object(context.scene)
+    try:
+        _outline["points3d"] = (
+            _mask_boundary_world_points(target, masked, w, h)
+            if target is not None and target.type == 'MESH' else [])
+    except Exception:
+        _outline["points3d"] = []
+    _outline_ensure_handler()
+    for area in context.screen.areas:
+        if area.type == 'VIEW_3D':
+            area.tag_redraw()
     op.report({'INFO'}, f"선택 영역: 텍스처의 {selected_ratio * 100.0:.1f}%")
     return {'FINISHED'}
 
