@@ -40,9 +40,8 @@ class MAT_PT_PaintSystem2DView(Panel):
         box = layout.box()
         col = box.column(align=True)
         col.label(text="Selection", icon='SELECT_SET')
-        if is_open:
-            col.label(text="Ctrl/Cmd+Shift+Drag: Lasso (2D View)")
-            col.label(text="+Alt: Subtract from selection")
+        col.label(text="Ctrl/Cmd+Shift+Drag: Lasso (2D/3D)")
+        col.label(text="+Alt: Subtract / Toolbar: Lasso Tools")
         row = col.row(align=True)
         row.operator("paint_system.invert_selection", text="Invert")
         row.operator("paint_system.clear_selection", text="Clear")

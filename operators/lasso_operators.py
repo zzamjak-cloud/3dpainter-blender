@@ -193,6 +193,120 @@ def _rasterize_polygon(width: int, height: int, uv_points) -> np.ndarray:
     return mask
 
 
+def _dilate3(m: np.ndarray) -> np.ndarray:
+    """3x3 최대값 필터 — 희소 텍셀 마크의 구멍 메움(클로징)용."""
+    pad = np.pad(m, 1, mode='constant')
+    out = pad[1:-1, 1:-1].copy()
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            if dy == 1 and dx == 1:
+                continue
+            np.maximum(out, pad[dy:dy + m.shape[0], dx:dx + m.shape[1]], out=out)
+    return out
+
+
+_uv_shader_cache = {}
+
+
+def _get_uv_shader():
+    """UV를 색으로 출력하는 셰이더 (지연 생성 — GPU 컨텍스트 필요)."""
+    if 'shader' not in _uv_shader_cache:
+        from gpu.types import GPUShaderCreateInfo, GPUStageInterfaceInfo
+        iface = GPUStageInterfaceInfo("ps_uv_iface")
+        iface.smooth('VEC2', "uvInterp")
+        info = GPUShaderCreateInfo()
+        info.push_constant('MAT4', "mvp")
+        info.vertex_in(0, 'VEC3', "pos")
+        info.vertex_in(1, 'VEC2', "uv")
+        info.vertex_out(iface)
+        info.fragment_out(0, 'VEC4', "fragColor")
+        info.vertex_source(
+            "void main() { uvInterp = uv;"
+            " gl_Position = mvp * vec4(pos, 1.0); }")
+        info.fragment_source(
+            "void main() { fragColor = vec4(uvInterp, 1.0, 1.0); }")
+        _uv_shader_cache['shader'] = gpu.shader.create_from_info(info)
+    return _uv_shader_cache['shader']
+
+
+def _mesh_uv_batch(obj, shader):
+    """오브젝트의 삼각화된 (pos, uv) 배치를 만든다."""
+    mesh = obj.data
+    uv_layer = mesh.uv_layers.active
+    if uv_layer is None:
+        return None
+    mesh.calc_loop_triangles()
+    n_loops = len(mesh.loops)
+    loop_v = np.empty(n_loops, dtype=np.int32)
+    mesh.loops.foreach_get('vertex_index', loop_v)
+    co = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get('co', co)
+    co = co.reshape(-1, 3)
+    uvs = np.empty(n_loops * 2, dtype=np.float32)
+    uv_layer.data.foreach_get('uv', uvs)
+    uvs = uvs.reshape(-1, 2)
+    n_tris = len(mesh.loop_triangles)
+    tl = np.empty(n_tris * 3, dtype=np.int32)
+    mesh.loop_triangles.foreach_get('loops', tl)
+    return batch_for_shader(
+        shader, 'TRIS',
+        {"pos": co[loop_v[tl]], "uv": uvs[tl]})
+
+
+def _poly_from_3d_view(context, region, points, w: int, h: int):
+    """3D 뷰 라쏘: UV를 오프스크린에 렌더해 화면 폴리곤 → 텍스처 마스크 변환.
+
+    깊이 테스트로 가려진 면은 자동 제외된다 (보이는 면만 선택).
+    """
+    obj = context.view_layer.objects.active
+    if obj is None or obj.type != 'MESH' or obj.data.uv_layers.active is None:
+        return None
+    shader = _get_uv_shader()
+    batch = _mesh_uv_batch(obj, shader)
+    if batch is None:
+        return None
+    rw, rh = region.width, region.height
+    rv3d = region.data
+    mvp = rv3d.window_matrix @ rv3d.view_matrix @ obj.matrix_world
+
+    offscreen = gpu.types.GPUOffScreen(rw, rh, format='RGBA32F')
+    try:
+        with offscreen.bind():
+            fb = gpu.state.active_framebuffer_get()
+            fb.clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+            gpu.state.depth_test_set('LESS')
+            gpu.state.depth_mask_set(True)
+            shader.uniform_float("mvp", mvp)
+            batch.draw(shader)
+            gpu.state.depth_test_set('NONE')
+            gpu.state.depth_mask_set(False)
+            buf = fb.read_color(0, 0, rw, rh, 4, 0, 'FLOAT')
+    finally:
+        offscreen.free()
+    buf.dimensions = rw * rh * 4
+    uvbuf = np.array(buf, dtype=np.float32).reshape(rh, rw, 4)
+
+    # 화면 공간에서 라쏘 내부 + 메시가 렌더된 픽셀만 취한다
+    norm_pts = [(p[0] / rw, p[1] / rh) for p in points]
+    screen_mask = _rasterize_polygon(rw, rh, norm_pts) > 0.5
+    valid = (uvbuf[:, :, 2] > 0.5) & screen_mask
+    if not valid.any():
+        return None
+    us = uvbuf[:, :, 0][valid]
+    vs = uvbuf[:, :, 1][valid]
+    xs = np.clip((us * w).astype(np.int32), 0, w - 1)
+    ys = np.clip((vs * h).astype(np.int32), 0, h - 1)
+    poly = np.zeros((h, w), dtype=np.float32)
+    poly[ys, xs] = 1.0
+    # 화면 픽셀보다 텍셀이 촘촘하면 마크가 희소해진다 → 클로징으로 메움
+    for _ in range(3):
+        poly = _dilate3(poly)
+    inv = 1.0 - poly
+    for _ in range(3):
+        inv = _dilate3(inv)
+    return 1.0 - inv
+
+
 def _box3(m: np.ndarray) -> np.ndarray:
     """3x3 박스 블러 — 라쏘 외곽 안티앨리어스/페더용."""
     pad = np.pad(m, 1, mode='edge')
@@ -252,26 +366,77 @@ def _apply_stencil(context, mask_img) -> None:
     _set_stencil_overlay(context, False)
 
 
+def _commit_selection(op, context, region, screen_points, mode):
+    """화면 폴리곤을 선택 마스크로 커밋한다 — 2D 캔버스/3D 뷰 공용."""
+    if len(screen_points) < 3:
+        return {'CANCELLED'}
+    canvas = get_canvas_object(context.scene)
+    space = context.space_data
+    w, h = _active_image_size(context)
+    in_canvas = canvas is not None and _in_canvas_view(space, canvas)
+
+    uv_points = None
+    if in_canvas:
+        uv_points = [_region_to_uv(context, region, p) for p in screen_points]
+        poly = _rasterize_polygon(w, h, uv_points)
+    else:
+        poly = _poly_from_3d_view(context, region, screen_points, w, h)
+        if poly is None:
+            op.report({'WARNING'}, "선택할 표면이 없습니다 — UV가 있는 메시 위에서 사용하세요")
+            return {'CANCELLED'}
+    # 외곽 안티앨리어스 + 약한 페더 (~2px)
+    poly = _box3(_box3(poly))
+
+    mask_img = _ensure_mask_image(w, h)
+    ip = context.tool_settings.image_paint
+    if ip.use_stencil_layer and ip.stencil_image == mask_img:
+        prev_masked = _get_mask_pixels(mask_img)[:, :, 0]
+    else:
+        prev_masked = np.ones((h, w), dtype=np.float32)  # 선택 없음 = 전면 차단
+
+    if mode == 'SUBTRACT':
+        masked = np.maximum(prev_masked, poly)
+    else:  # REPLACE
+        masked = 1.0 - poly
+
+    selected_ratio = float(1.0 - masked.mean())
+    if selected_ratio <= 0.0:
+        op.report({'WARNING'}, "선택 영역이 비어 있습니다")
+        return {'CANCELLED'}
+
+    _set_masked_map(mask_img, masked)
+    _apply_stencil(context, mask_img)
+
+    # 선택 윤곽선(점선)은 UV 좌표가 확정되는 2D 캔버스 뷰에서만 유지 표시
+    if uv_points is not None:
+        if mode == 'REPLACE':
+            _outline["polys"] = [(mode, uv_points)]
+        else:
+            _outline["polys"].append((mode, uv_points))
+        _outline_ensure_handler()
+    elif mode == 'REPLACE':
+        _outline["polys"].clear()
+    context.area.tag_redraw()
+    op.report({'INFO'}, f"선택 영역: 텍스처의 {selected_ratio * 100.0:.1f}%")
+    return {'FINISHED'}
+
+
 class PAINTSYSTEM_OT_LassoSelect(Operator):
-    """2D 뷰에서 라쏘로 선택 영역을 만든다 (+Alt: 선택에서 제외)"""
+    """자유곡선 라쏘 선택 — 2D 캔버스·3D 뷰 모두 지원 (+Alt: 선택에서 제외)"""
     bl_idname = "paint_system.lasso_select"
     bl_label = "Lasso Select"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        # 2D 뷰 밖에서도 매칭시켜 이벤트를 소비한다 — 조용히 페인팅되는 것 방지
         return (
             context.mode == 'PAINT_TEXTURE'
-            and get_canvas_object(context.scene) is not None
             and context.space_data is not None
             and context.space_data.type == 'VIEW_3D'
         )
 
     def invoke(self, context, event):
-        canvas = get_canvas_object(context.scene)
-        if not _in_canvas_view(context.space_data, canvas):
-            self.report({'WARNING'}, "라쏘 선택은 2D 뷰에서 사용하세요 (v1 제약)")
+        if context.region is None or context.region.data is None:
             return {'CANCELLED'}
         self._region_ptr = context.region.as_pointer()
         self._points = [(event.mouse_region_x, event.mouse_region_y)]
@@ -317,44 +482,101 @@ class PAINTSYSTEM_OT_LassoSelect(Operator):
         context.area.tag_redraw()
 
     def _commit(self, context):
-        if len(self._points) < 3:
+        return _commit_selection(
+            self, context, context.region, self._points, self._mode)
+
+
+class PAINTSYSTEM_OT_PolyLassoSelect(Operator):
+    """다각형 라쏘 선택 — 클릭으로 꼭짓점 추가, 시작점 클릭/Enter로 닫기,
+    Backspace로 마지막 점 취소, ESC/우클릭 취소 (+Alt 시작: 선택에서 제외)"""
+    bl_idname = "paint_system.poly_lasso_select"
+    bl_label = "Polygon Lasso Select"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    CLOSE_RADIUS = 12.0  # 시작점 클릭 판정 반경 (px)
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'PAINT_TEXTURE'
+            and context.space_data is not None
+            and context.space_data.type == 'VIEW_3D'
+        )
+
+    def invoke(self, context, event):
+        if context.region is None or context.region.data is None:
             return {'CANCELLED'}
-        region = context.region
-        uv_points = [_region_to_uv(context, region, p) for p in self._points]
-        w, h = _active_image_size(context)
-        poly = _rasterize_polygon(w, h, uv_points)  # 선택 안쪽 = 1
-        # 외곽 안티앨리어스 + 약한 페더 (~2px) — 계단 현상·날카로운 경계 보정
-        poly = _box3(_box3(poly))
-
-        mask_img = _ensure_mask_image(w, h)
-        ip = context.tool_settings.image_paint
-        if ip.use_stencil_layer and ip.stencil_image == mask_img:
-            prev_masked = _get_mask_pixels(mask_img)[:, :, 0]
-        else:
-            prev_masked = np.ones((h, w), dtype=np.float32)  # 선택 없음 = 전면 차단
-
-        if self._mode == 'SUBTRACT':
-            masked = np.maximum(prev_masked, poly)  # 선택에서 빼기 = 차단 확장
-        else:  # REPLACE
-            masked = 1.0 - poly
-
-        selected_ratio = float(1.0 - masked.mean())
-        if selected_ratio <= 0.0:
-            self.report({'WARNING'}, "선택 영역이 비어 있습니다 — 캔버스 위에서 그려주세요")
-            return {'CANCELLED'}
-
-        _set_masked_map(mask_img, masked)
-        _apply_stencil(context, mask_img)
-
-        # 선택 윤곽선 유지 표시
-        if self._mode == 'REPLACE':
-            _outline["polys"] = [(self._mode, uv_points)]
-        else:
-            _outline["polys"].append((self._mode, uv_points))
-        _outline_ensure_handler()
+        self._region_ptr = context.region.as_pointer()
+        pt = (float(event.mouse_region_x), float(event.mouse_region_y))
+        self._points = [pt]
+        self._preview = pt
+        self._mode = 'SUBTRACT' if event.alt else 'REPLACE'
+        self._handle = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw, (context,), 'WINDOW', 'POST_PIXEL')
+        context.window_manager.modal_handler_add(self)
         context.area.tag_redraw()
-        self.report({'INFO'}, f"선택 영역: 텍스처의 {selected_ratio * 100.0:.1f}%")
-        return {'FINISHED'}
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        import math
+        if event.type == 'MOUSEMOVE':
+            self._preview = (float(event.mouse_region_x), float(event.mouse_region_y))
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            pt = (float(event.mouse_region_x), float(event.mouse_region_y))
+            first = self._points[0]
+            near_start = (
+                len(self._points) >= 3
+                and math.hypot(pt[0] - first[0], pt[1] - first[1]) <= self.CLOSE_RADIUS
+            )
+            if near_start:
+                self._finish_draw(context)
+                return _commit_selection(
+                    self, context, context.region, self._points, self._mode)
+            self._points.append(pt)
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            self._finish_draw(context)
+            return _commit_selection(
+                self, context, context.region, self._points, self._mode)
+        if event.type == 'BACK_SPACE' and event.value == 'PRESS':
+            if len(self._points) > 1:
+                self._points.pop()
+                context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type in {'RIGHTMOUSE', 'ESC'}:
+            self._finish_draw(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def _draw(self, context):
+        region = bpy.context.region
+        if region is None or region.as_pointer() != self._region_ptr:
+            return
+        coords = [(p[0], p[1], 0.0) for p in self._points]
+        coords.append((self._preview[0], self._preview[1], 0.0))
+        if len(coords) >= 3:
+            coords.append(coords[0])  # 닫힘 미리보기
+        if len(coords) < 2:
+            return
+        _draw_polyline(region, coords, (1.0, 1.0, 1.0, 0.9))
+        # 시작점 표시 (닫기 판정 반경)
+        first = coords[0]
+        r = self.CLOSE_RADIUS
+        square = [
+            (first[0] - r, first[1] - r, 0.0), (first[0] + r, first[1] - r, 0.0),
+            (first[0] + r, first[1] + r, 0.0), (first[0] - r, first[1] + r, 0.0),
+            (first[0] - r, first[1] - r, 0.0),
+        ]
+        _draw_polyline(region, square, (1.0, 1.0, 1.0, 0.4))
+
+    def _finish_draw(self, context):
+        if self._handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+            self._handle = None
+        context.area.tag_redraw()
 
 
 class PAINTSYSTEM_OT_FillSelection(Operator):
@@ -507,8 +729,43 @@ class PAINTSYSTEM_OT_InvertSelection(Operator):
         return {'FINISHED'}
 
 
+class PS_ToolLassoSelect(bpy.types.WorkSpaceTool):
+    """텍스처 페인트 툴바의 자유곡선 라쏘 툴."""
+    bl_space_type = 'VIEW_3D'
+    bl_context_mode = 'PAINT_TEXTURE'
+    bl_idname = "paint_system.lasso_select_tool"
+    bl_label = "PS Lasso"
+    bl_description = "라쏘 선택 — 드래그로 자유곡선, Alt=선택에서 제외"
+    bl_icon = "ops.generic.select_lasso"
+    bl_keymap = (
+        ("paint_system.lasso_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+        ("paint_system.lasso_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True}, None),
+    )
+
+
+class PS_ToolPolyLassoSelect(bpy.types.WorkSpaceTool):
+    """텍스처 페인트 툴바의 다각형 라쏘 툴."""
+    bl_space_type = 'VIEW_3D'
+    bl_context_mode = 'PAINT_TEXTURE'
+    bl_idname = "paint_system.poly_lasso_select_tool"
+    bl_label = "PS Polygon Lasso"
+    bl_description = (
+        "다각형 라쏘 — 클릭으로 꼭짓점, 시작점 클릭/Enter로 닫기, "
+        "Backspace로 점 취소, Alt=선택에서 제외")
+    bl_icon = "ops.generic.select_lasso"
+    bl_keymap = (
+        ("paint_system.poly_lasso_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+        ("paint_system.poly_lasso_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True}, None),
+    )
+
+
 classes = (
     PAINTSYSTEM_OT_LassoSelect,
+    PAINTSYSTEM_OT_PolyLassoSelect,
     PAINTSYSTEM_OT_FillSelection,
     PAINTSYSTEM_OT_DeselectOnEmptyClick,
     PAINTSYSTEM_OT_ClearSelection,
@@ -520,8 +777,22 @@ _register, _unregister = bpy.utils.register_classes_factory(classes)
 
 def register():
     _register()
+    try:
+        bpy.utils.register_tool(
+            PS_ToolLassoSelect, after={"builtin_brush.paint"},
+            separator=True, group=True)
+        bpy.utils.register_tool(
+            PS_ToolPolyLassoSelect, after={PS_ToolLassoSelect.bl_idname})
+    except Exception:
+        # 툴바 등록 실패는 치명적이지 않음 (키맵으로 계속 사용 가능)
+        pass
 
 
 def unregister():
+    for tool in (PS_ToolPolyLassoSelect, PS_ToolLassoSelect):
+        try:
+            bpy.utils.unregister_tool(tool)
+        except Exception:
+            pass
     _outline_clear()
     _unregister()
