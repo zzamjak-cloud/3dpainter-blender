@@ -187,6 +187,39 @@ def register() -> None:
                     properties={'value': _val},
                 )
 
+        # 3DPainter 포크: 레이어 단축키 — Ctrl/Cmd+E 병합, Ctrl/Cmd+Alt+Shift+N 새 레이어
+        for _mods in (dict(ctrl=True), dict(oskey=True)):
+            _add_keymap_entry(
+                kc,
+                name=km_name,
+                space_type=space,
+                idname='paint_system.merge_down',
+                key='E',
+                **_mods,
+            )
+        for _mods in (dict(ctrl=True, alt=True, shift=True),
+                      dict(oskey=True, alt=True, shift=True)):
+            _add_keymap_entry(
+                kc,
+                name=km_name,
+                space_type=space,
+                idname='paint_system.new_image_layer',
+                key='N',
+                properties={'image_add_type': 'NEW', 'skip_dialog': True},
+                **_mods,
+            )
+
+        # 3DPainter 포크: 도구 전환 — M(사각/원 토글), L(라쏘/다각형 토글), B(브러시)
+        _add_keymap_entry(
+            kc, name=km_name, space_type=space,
+            idname='paint_system.cycle_shape_tool', key='M')
+        _add_keymap_entry(
+            kc, name=km_name, space_type=space,
+            idname='paint_system.cycle_lasso_tool', key='L')
+        _add_keymap_entry(
+            kc, name=km_name, space_type=space,
+            idname='paint_system.set_brush_tool', key='B')
+
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(
             kc,

@@ -29,16 +29,19 @@ class MAT_PT_PaintSystemProjectionTex(Panel):
         layout = self.layout
         scene = context.scene
 
-        row = layout.row()
-        row.template_list(
-            "PAINTSYSTEM_UL_ProjectionTexList", "",
-            scene, "ps_projection_textures",
-            scene, "ps_projection_active_index",
-            rows=3,
-        )
-        col = row.column(align=True)
-        col.operator("paint_system.projection_import", text="", icon='IMPORT')
-        col.operator("paint_system.projection_remove", text="", icon='REMOVE')
+        # 썸네일 뷰: 클릭하면 등록 이미지 전체가 그리드로 펼쳐짐 (호버 시 이름)
+        if len(scene.ps_projection_textures):
+            layout.template_icon_view(
+                scene, "ps_projection_enum",
+                show_labels=False,
+                scale=scene.ps_projection_thumb_scale,
+                scale_popup=scene.ps_projection_thumb_scale,
+            )
+        layout.prop(scene, "ps_projection_thumb_scale", slider=True)
+
+        row = layout.row(align=True)
+        row.operator("paint_system.projection_import", text="Import", icon='IMPORT')
+        row.operator("paint_system.projection_remove", text="", icon='REMOVE')
 
         layout.operator(
             "paint_system.projection_place",

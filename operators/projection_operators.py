@@ -43,6 +43,64 @@ def _active_item(context):
     return None
 
 
+# ---- 썸네일 프리뷰 ----
+
+_pcoll = None
+_enum_items_cache = []  # bpy enum 콜백 문자열의 GC 방지용 유지 참조
+
+
+def _previews():
+    global _pcoll
+    if _pcoll is None:
+        import bpy.utils.previews
+        _pcoll = bpy.utils.previews.new()
+    return _pcoll
+
+
+def _clear_previews():
+    global _pcoll
+    if _pcoll is not None:
+        import bpy.utils.previews
+        bpy.utils.previews.remove(_pcoll)
+        _pcoll = None
+
+
+def _thumb_icon_id(item) -> int:
+    pcoll = _previews()
+    key = item.filepath
+    if key not in pcoll:
+        try:
+            pcoll.load(key, item.filepath, 'IMAGE')
+        except (KeyError, RuntimeError):
+            return 0
+    return pcoll[key].icon_id
+
+
+def _projection_enum_items(self, context):
+    global _enum_items_cache
+    if context is None:
+        return [('0', "", "", 0, 0)]
+    items = []
+    for i, item in enumerate(context.scene.ps_projection_textures):
+        # 마우스 호버 시 이름 표시 (툴팁 = 파일명)
+        items.append((str(i), item.name, item.filepath, _thumb_icon_id(item), i))
+    if not items:
+        items = [('0', "(empty)", "등록된 이미지 없음", 0, 0)]
+    _enum_items_cache = items
+    return items
+
+
+def _enum_get(self):
+    n = len(self.ps_projection_textures)
+    if n == 0:
+        return 0
+    return min(max(self.ps_projection_active_index, 0), n - 1)
+
+
+def _enum_set(self, value):
+    self.ps_projection_active_index = value
+
+
 class PAINTSYSTEM_OT_ProjectionImport(Operator):
     """이미지 파일(JPG/PNG/PSD)을 투사 목록에 등록한다 (다중 선택 가능)"""
     bl_idname = "paint_system.projection_import"
@@ -370,6 +428,7 @@ def _autoreload_timer():
                     img.reload()
                     if hasattr(img, 'update_tag'):
                         img.update_tag()
+                _clear_previews()  # 썸네일도 다음 표시 때 재생성
         except Exception:
             continue
     return 2.0
@@ -389,13 +448,24 @@ def register():
     bpy.types.Scene.ps_projection_textures = CollectionProperty(
         type=PSProjectionTexItem)
     bpy.types.Scene.ps_projection_active_index = IntProperty(default=0)
+    bpy.types.Scene.ps_projection_enum = bpy.props.EnumProperty(
+        items=_projection_enum_items,
+        get=_enum_get,
+        set=_enum_set,
+        name="Projection Image",
+    )
+    bpy.types.Scene.ps_projection_thumb_scale = FloatProperty(
+        name="Thumbnail Size", default=6.0, min=2.0, max=12.0)
     bpy.app.timers.register(_autoreload_timer, first_interval=2.0, persistent=True)
 
 
 def unregister():
     if bpy.app.timers.is_registered(_autoreload_timer):
         bpy.app.timers.unregister(_autoreload_timer)
+    _clear_previews()
     del bpy.types.Scene.ps_projection_textures
     del bpy.types.Scene.ps_projection_active_index
+    del bpy.types.Scene.ps_projection_enum
+    del bpy.types.Scene.ps_projection_thumb_scale
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

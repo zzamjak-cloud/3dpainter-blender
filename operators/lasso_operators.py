@@ -852,6 +852,198 @@ class PAINTSYSTEM_OT_InvertSelection(Operator):
         return {'FINISHED'}
 
 
+class PAINTSYSTEM_OT_ShapeSelect(Operator):
+    """사각형/원형 선택 — 드래그로 영역 지정, Shift=정비율, Alt 시작=선택에서 제외"""
+    bl_idname = "paint_system.shape_select"
+    bl_label = "Shape Select"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    shape: bpy.props.EnumProperty(
+        items=[('RECT', "Rectangle", ""), ('ELLIPSE', "Ellipse", "")],
+        default='RECT',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'PAINT_TEXTURE'
+            and context.space_data is not None
+            and context.space_data.type == 'VIEW_3D'
+        )
+
+    def invoke(self, context, event):
+        if context.region is None or context.region.data is None:
+            return {'CANCELLED'}
+        self._region_ptr = context.region.as_pointer()
+        self._start = (float(event.mouse_region_x), float(event.mouse_region_y))
+        self._cur = self._start
+        self._constrain = False
+        self._mode = 'SUBTRACT' if event.alt else 'REPLACE'
+        self._handle = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw, (context,), 'WINDOW', 'POST_PIXEL')
+        context.window_manager.modal_handler_add(self)
+        context.area.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            self._cur = (float(event.mouse_region_x), float(event.mouse_region_y))
+            self._constrain = event.shift
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            self._finish_draw(context)
+            return _commit_selection(
+                self, context, context.region, self._polygon(), self._mode)
+        if event.type in {'RIGHTMOUSE', 'ESC'}:
+            self._finish_draw(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def _bounds(self):
+        import math
+        x0, y0 = self._start
+        x1, y1 = self._cur
+        dx, dy = x1 - x0, y1 - y0
+        if self._constrain:  # Shift = 정사각/정원
+            m = max(abs(dx), abs(dy))
+            dx = math.copysign(m, dx if dx else 1.0)
+            dy = math.copysign(m, dy if dy else 1.0)
+        return x0, y0, x0 + dx, y0 + dy
+
+    def _polygon(self):
+        import math
+        x0, y0, x1, y1 = self._bounds()
+        if self.shape == 'RECT':
+            return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+        rx, ry = abs(x1 - x0) * 0.5, abs(y1 - y0) * 0.5
+        return [
+            (cx + rx * math.cos(t), cy + ry * math.sin(t))
+            for t in (i * math.tau / 64.0 for i in range(64))
+        ]
+
+    def _draw(self, context):
+        region = bpy.context.region
+        if region is None or region.as_pointer() != self._region_ptr:
+            return
+        pts = self._polygon()
+        coords = [(p[0], p[1], 0.0) for p in pts]
+        coords.append(coords[0])
+        _draw_polyline(region, coords, (1.0, 1.0, 1.0, 0.9))
+
+    def _finish_draw(self, context):
+        if self._handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+            self._handle = None
+        context.area.tag_redraw()
+
+
+def _active_tool_id(context) -> str:
+    from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+    tool = ToolSelectPanelHelper.tool_active_from_context(context)
+    return getattr(tool, 'idname', '') or ''
+
+
+def _set_tool(name: str) -> bool:
+    try:
+        bpy.ops.wm.tool_set_by_id(name=name)
+        return True
+    except RuntimeError:
+        return False
+
+
+class PAINTSYSTEM_OT_CycleShapeTool(Operator):
+    """M: 사각/원 선택 도구 전환 (반복 시 토글)"""
+    bl_idname = "paint_system.cycle_shape_tool"
+    bl_label = "Cycle Shape Select Tool"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'PAINT_TEXTURE'
+
+    def execute(self, context):
+        cur = _active_tool_id(context)
+        if cur == PS_ToolBoxSelect.bl_idname:
+            _set_tool(PS_ToolEllipseSelect.bl_idname)
+        else:
+            _set_tool(PS_ToolBoxSelect.bl_idname)
+        return {'FINISHED'}
+
+
+class PAINTSYSTEM_OT_CycleLassoTool(Operator):
+    """L: 라쏘/다각형 라쏘 도구 전환 (반복 시 토글)"""
+    bl_idname = "paint_system.cycle_lasso_tool"
+    bl_label = "Cycle Lasso Tool"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'PAINT_TEXTURE'
+
+    def execute(self, context):
+        cur = _active_tool_id(context)
+        if cur == PS_ToolLassoSelect.bl_idname:
+            _set_tool(PS_ToolPolyLassoSelect.bl_idname)
+        else:
+            _set_tool(PS_ToolLassoSelect.bl_idname)
+        return {'FINISHED'}
+
+
+class PAINTSYSTEM_OT_SetBrushTool(Operator):
+    """B: 브러시 도구 선택"""
+    bl_idname = "paint_system.set_brush_tool"
+    bl_label = "Select Brush Tool"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'PAINT_TEXTURE'
+
+    def execute(self, context):
+        for name in ("builtin.brush", "builtin_brush.paint", "builtin_brush.Paint"):
+            if _set_tool(name):
+                return {'FINISHED'}
+        return {'CANCELLED'}
+
+
+class PS_ToolBoxSelect(bpy.types.WorkSpaceTool):
+    """텍스처 페인트 툴바의 사각형 선택 툴."""
+    bl_space_type = 'VIEW_3D'
+    bl_context_mode = 'PAINT_TEXTURE'
+    bl_idname = "paint_system.box_select_tool"
+    bl_label = "PS Box Select"
+    bl_description = "사각형 선택 — 드래그, Shift=정사각, Alt=선택에서 제외 (M: 원형과 토글)"
+    bl_icon = "ops.generic.select_box"
+    bl_keymap = (
+        ("paint_system.shape_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS'},
+         {"properties": [("shape", 'RECT')]}),
+        ("paint_system.shape_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True},
+         {"properties": [("shape", 'RECT')]}),
+    )
+
+
+class PS_ToolEllipseSelect(bpy.types.WorkSpaceTool):
+    """텍스처 페인트 툴바의 원형 선택 툴."""
+    bl_space_type = 'VIEW_3D'
+    bl_context_mode = 'PAINT_TEXTURE'
+    bl_idname = "paint_system.ellipse_select_tool"
+    bl_label = "PS Ellipse Select"
+    bl_description = "원형 선택 — 드래그, Shift=정원, Alt=선택에서 제외 (M: 사각형과 토글)"
+    bl_icon = "ops.generic.select_circle"
+    bl_keymap = (
+        ("paint_system.shape_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS'},
+         {"properties": [("shape", 'ELLIPSE')]}),
+        ("paint_system.shape_select",
+         {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True},
+         {"properties": [("shape", 'ELLIPSE')]}),
+    )
+
+
 class PS_ToolLassoSelect(bpy.types.WorkSpaceTool):
     """텍스처 페인트 툴바의 자유곡선 라쏘 툴."""
     bl_space_type = 'VIEW_3D'
@@ -889,6 +1081,10 @@ class PS_ToolPolyLassoSelect(bpy.types.WorkSpaceTool):
 classes = (
     PAINTSYSTEM_OT_LassoSelect,
     PAINTSYSTEM_OT_PolyLassoSelect,
+    PAINTSYSTEM_OT_ShapeSelect,
+    PAINTSYSTEM_OT_CycleShapeTool,
+    PAINTSYSTEM_OT_CycleLassoTool,
+    PAINTSYSTEM_OT_SetBrushTool,
     PAINTSYSTEM_OT_FillSelection,
     PAINTSYSTEM_OT_DeselectOnEmptyClick,
     PAINTSYSTEM_OT_ClearSelection,
@@ -897,22 +1093,27 @@ classes = (
 
 _register, _unregister = bpy.utils.register_classes_factory(classes)
 
+_TOOLS_ORDER = (
+    # (툴, register_tool 키워드) — 사각/원 그룹 위, 라쏘 그룹 아래
+    (PS_ToolBoxSelect, dict(after={"builtin_brush.paint"}, separator=True, group=True)),
+    (PS_ToolEllipseSelect, dict(after={PS_ToolBoxSelect.bl_idname})),
+    (PS_ToolLassoSelect, dict(after={PS_ToolBoxSelect.bl_idname}, group=True)),
+    (PS_ToolPolyLassoSelect, dict(after={PS_ToolLassoSelect.bl_idname})),
+)
+
 
 def register():
     _register()
-    try:
-        bpy.utils.register_tool(
-            PS_ToolLassoSelect, after={"builtin_brush.paint"},
-            separator=True, group=True)
-        bpy.utils.register_tool(
-            PS_ToolPolyLassoSelect, after={PS_ToolLassoSelect.bl_idname})
-    except Exception:
-        # 툴바 등록 실패는 치명적이지 않음 (키맵으로 계속 사용 가능)
-        pass
+    for tool, kwargs in _TOOLS_ORDER:
+        try:
+            bpy.utils.register_tool(tool, **kwargs)
+        except Exception:
+            # 툴바 등록 실패는 치명적이지 않음 (키맵으로 계속 사용 가능)
+            pass
 
 
 def unregister():
-    for tool in (PS_ToolPolyLassoSelect, PS_ToolLassoSelect):
+    for tool, _kwargs in reversed(_TOOLS_ORDER):
         try:
             bpy.utils.unregister_tool(tool)
         except Exception:
