@@ -7,6 +7,7 @@ from ..utils.version import is_newer_than
 # --
 from ..paintsystem.data import Channel, Layer
 from ..paintsystem.context import PSContextMixin
+from ..paintsystem.layer_types import get_layer_type, DEFAULT_LAYER_ICON
 from ..custom_icons import get_icon, get_icon_from_socket_type
 from ..preferences import get_preferences
 from ..utils.nodes import find_node, get_material_output, traverse_connected_nodes
@@ -572,48 +573,36 @@ def request_preview(datablock, mode: str = 'ENSURE'):
 
 
 def draw_layer_icon(layer: "Layer", layout: bpy.types.UILayout):
+    # 커스텀 아이콘·서브 프로퍼티가 필요한 타입만 전용 분기를 두고,
+    # 나머지는 레지스트리의 내장 아이콘으로 떨어진다.
     match layer.type:
         case 'IMAGE':
             if not layer.image:
                 layout.label(icon_value=get_icon('image'))
-                return
+            elif layer.image.preview and is_image_painted(layer.image.preview):
+                layout.label(icon_value=layer.image.preview.icon_id)
             else:
-                if layer.image.preview and is_image_painted(layer.image.preview):
-                    layout.label(
-                        icon_value=layer.image.preview.icon_id)
-                else:
-                    if layer.image.is_dirty:
-                        request_preview(layer.image, 'ASSET')
-                    layout.label(icon_value=get_icon('image'))
+                if layer.image.is_dirty:
+                    request_preview(layer.image, 'ASSET')
+                layout.label(icon_value=get_icon('image'))
+            return
         case 'FOLDER':
             layout.prop(layer, "is_expanded", text="", icon_only=True, icon_value=get_icon(
                 'folder_open') if layer.is_expanded else get_icon('folder'), emboss=False)
+            return
         case 'SOLID_COLOR':
             rgb_node = layer.source_node
             if rgb_node:
                 layout.prop(
                     rgb_node.outputs[0], "default_value", text="", icon='IMAGE_RGB_ALPHA')
-        case 'ADJUSTMENT':
-            layout.label(icon='SHADERFX')
-        case 'SHADER':
-            layout.label(icon='SHADING_RENDERED')
-        case 'NODE_GROUP':
-            layout.label(icon='NODETREE')
-        case 'ATTRIBUTE':
-            layout.label(icon='MESH_DATA')
+            return
         case 'GRADIENT':
             if layer.gradient_type == 'FAKE_LIGHT':
                 layout.label(icon='LIGHT')
-            else:
-                layout.label(icon='COLOR')
-        case 'RANDOM':
-            layout.label(icon='SEQ_HISTOGRAM')
-        case 'TEXTURE':
-            layout.label(icon='TEXTURE')
-        case 'GEOMETRY':
-            layout.label(icon='MESH_DATA')
-        case _:
-            layout.label(icon='BLANK1')
+                return
+
+    spec = get_layer_type(layer.type)
+    layout.label(icon=spec.icon if spec and spec.icon else DEFAULT_LAYER_ICON)
 
 def draw_indent(layout: bpy.types.UILayout, level: int):
     row = layout.row(align=True)

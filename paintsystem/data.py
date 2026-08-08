@@ -57,6 +57,7 @@ from .graph import (
     set_layer_blend_type,
 )
 from .graph.common import get_library_nodetree, get_library_object, DEFAULT_PS_UV_MAP_NAME
+from .layer_types import build_layer_type_enum, get_layer_type, layer_modifies_color
 from .nested_list_manager import BaseNestedListManager, BaseNestedListItem
 
 BLEND_MODE_ENUM = []
@@ -96,19 +97,7 @@ TEMPLATE_ENUM = [
     ('NONE', "None", "Just add node group to material", "NONE", 4),
 ]
 
-LAYER_TYPE_ENUM = [
-    ('FOLDER', "Folder", "Folder layer"),
-    ('IMAGE', "Image", "Image layer"),
-    ('SOLID_COLOR', "Solid Color", "Solid Color layer"),
-    ('ATTRIBUTE', "Attribute", "Attribute layer"),
-    ('ADJUSTMENT', "Adjustment", "Adjustment layer"),
-    ('NODE_GROUP', "Node Group", "Node Group layer"),
-    ('GRADIENT', "Gradient", "Gradient layer"),
-    ('RANDOM', "Random", "Random Color layer"),
-    ('TEXTURE', "Texture", "Texture layer"),
-    ('GEOMETRY', "Geometry", "Geometry layer"),
-    ('BLANK', "Blank", "Blank layer"),
-]
+LAYER_TYPE_ENUM = build_layer_type_enum()
 
 CHANNEL_TYPE_ENUM = [
     ('COLOR', "Color", "Color channel", get_icon('color_socket'), 1),
@@ -913,7 +902,8 @@ class Layer(BaseNestedListItem):
                         add_empty_to_collection(context, self.empty_object)
         
         # Clean up
-        if self.empty_object and self.type not in ["GRADIENT", "IMAGE", "TEXTURE", "FAKE_LIGHT"]:
+        spec = get_layer_type(self.type)
+        if self.empty_object and not (spec and spec.keeps_empty_object):
             collection = get_paint_system_collection(context)
             if self.empty_object.name in collection.objects:
                 collection.objects.unlink(self.empty_object)
@@ -975,23 +965,10 @@ class Layer(BaseNestedListItem):
         if source_node:
             return source_node
         # Legacy source node
-        match self.type:
-            case "IMAGE":
-                return self.find_node("image")
-            case "TEXTURE":
-                return self.find_node("texture")
-            case "ATTRIBUTE":
-                return self.find_node("attribute")
-            case "ADJUSTMENT":
-                return self.find_node("adjustment")
-            case "GRADIENT":
-                return self.find_node("gradient")
-            case "NODE_GROUP":
-                return self.find_node("custom_node_tree")
-            case "SOLID_COLOR":
-                return self.find_node("rgb")
-            case _:
-                return None
+        spec = get_layer_type(self.type)
+        if spec and spec.legacy_source_name:
+            return self.find_node(spec.legacy_source_name)
+        return None
     
     @property
     def pre_mix_node(self) -> Node | None:
@@ -1469,7 +1446,8 @@ class Layer(BaseNestedListItem):
     
     @property
     def uses_coord_type(self) -> bool:
-        return self.type in ['IMAGE', 'TEXTURE']
+        spec = get_layer_type(self.type)
+        return bool(spec and spec.uses_coord)
     
     def get_layer_warnings(self, context: Context) -> List[str]:
         ps_ctx = parse_context(context)
@@ -1638,7 +1616,7 @@ class Layer(BaseNestedListItem):
     
     @property
     def modifies_color_data(self) -> bool:
-        return self.type == "ATTRIBUTE" or (self.type == "GRADIENT" and self.gradient_type == "GRADIENT_MAP") or self.blend_mode != "MIX"
+        return layer_modifies_color(self) or self.blend_mode != "MIX"
 
 def get_layer_by_uid(material: Material, uid: str) -> Layer | None:
     uid_to_layer = _get_material_layer_uid_map(material)

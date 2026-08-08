@@ -3,20 +3,10 @@ from typing import TYPE_CHECKING, Optional
 
 import bpy
 from .common import create_mixing_graph, NodeTreeBuilder, create_coord_graph, get_library_nodetree, get_layer_blend_type, set_layer_blend_type, DEFAULT_PS_UV_MAP_NAME
+from ..layer_types import LAYER_TYPES, get_layer_version
 
 if TYPE_CHECKING:
     from ..data import Layer
-
-IMAGE_LAYER_VERSION = 6
-FOLDER_LAYER_VERSION = 4
-SOLID_COLOR_LAYER_VERSION = 4
-ATTRIBUTE_LAYER_VERSION = 4
-ADJUSTMENT_LAYER_VERSION = 4
-GRADIENT_LAYER_VERSION = 4
-RANDOM_LAYER_VERSION = 5
-CUSTOM_LAYER_VERSION = 4
-TEXTURE_LAYER_VERSION = 4
-GEOMETRY_LAYER_VERSION = 4
 
 ALPHA_OVER_LAYER_VERSION = 1
 
@@ -356,33 +346,7 @@ class PSNodeTreeBuilder:
 
 
 def get_layer_version_for_type(type: str) -> int:
-    match type:
-        case "IMAGE":
-            return IMAGE_LAYER_VERSION
-        case "FOLDER":
-            return FOLDER_LAYER_VERSION
-        case "SOLID_COLOR":
-            return SOLID_COLOR_LAYER_VERSION
-        case "ATTRIBUTE":
-            return ATTRIBUTE_LAYER_VERSION
-        case "ADJUSTMENT":
-            return ADJUSTMENT_LAYER_VERSION
-        case "GRADIENT":
-            return GRADIENT_LAYER_VERSION
-        case "RANDOM":
-            return RANDOM_LAYER_VERSION
-        case "CUSTOM":
-            return CUSTOM_LAYER_VERSION
-        case "TEXTURE":
-            return TEXTURE_LAYER_VERSION
-        case "GEOMETRY":
-            return GEOMETRY_LAYER_VERSION
-        case "NODE_GROUP":
-            return CUSTOM_LAYER_VERSION
-        case "BLANK":
-            return 0
-        case _:
-            return 0
+    return get_layer_version(type)
 
 def get_texture_identifier(texture_type: str) -> str:
     identifier_mapping = {
@@ -425,17 +389,17 @@ def create_image_graph(layer: "Layer"):
     # Create builder with mixing graph - alpha will be determined later
     color_socket = parse_socket_name(layer, layer.color_output_name, "Color")
     alpha_socket = parse_socket_name(layer, layer.alpha_output_name, "Alpha")
-    builder = PSNodeTreeBuilder(layer, IMAGE_LAYER_VERSION, "source", color_socket, "source", alpha_socket)
+    builder = PSNodeTreeBuilder(layer, LAYER_TYPES["IMAGE"].version, "source", color_socket, "source", alpha_socket)
     builder.add_node("source", "ShaderNodeTexImage", {"image.force": img, "interpolation": "Closest", "name": "source"})
     builder.create_coord_graph("source", "Vector")
     return builder
 
 def create_folder_graph(layer: "Layer"):
-    builder = PSNodeTreeBuilder(layer, FOLDER_LAYER_VERSION, "group_input", "Over Color", "group_input", "Over Alpha")
+    builder = PSNodeTreeBuilder(layer, LAYER_TYPES["FOLDER"].version, "group_input", "Over Color", "group_input", "Over Alpha")
     return builder
 
 def create_solid_graph(layer: "Layer"):
-    builder = PSNodeTreeBuilder(layer, SOLID_COLOR_LAYER_VERSION, "source", "Color")
+    builder = PSNodeTreeBuilder(layer, LAYER_TYPES["SOLID_COLOR"].version, "source", "Color")
     builder.add_node("source", "ShaderNodeRGB", {"name": "source"}, default_outputs={0: (1, 1, 1, 1)})
     return builder
 
@@ -443,9 +407,9 @@ def create_attribute_graph(layer: "Layer"):
     color_socket = parse_socket_name(layer, layer.color_output_name, "Color")
     alpha_socket = parse_socket_name(layer, layer.alpha_output_name, "Alpha")
     if alpha_socket:
-        builder = PSNodeTreeBuilder(layer, ATTRIBUTE_LAYER_VERSION, "source", color_socket, "source", alpha_socket)
+        builder = PSNodeTreeBuilder(layer, LAYER_TYPES["ATTRIBUTE"].version, "source", color_socket, "source", alpha_socket)
     else:
-        builder = PSNodeTreeBuilder(layer, ATTRIBUTE_LAYER_VERSION, "source", color_socket)
+        builder = PSNodeTreeBuilder(layer, LAYER_TYPES["ATTRIBUTE"].version, "source", color_socket)
     builder.add_node("source", "ShaderNodeAttribute", {"name": "source"})
     return builder
 
@@ -459,7 +423,7 @@ def create_adjustment_graph(layer: "Layer"):
         case "ShaderNodeMapRange":
             input_socket_name = "Value"
             output_socket_name = "Result"
-    builder = PSNodeTreeBuilder(layer, ADJUSTMENT_LAYER_VERSION, "source", output_socket_name)
+    builder = PSNodeTreeBuilder(layer, LAYER_TYPES["ADJUSTMENT"].version, "source", output_socket_name)
     builder.add_node("source", adjustment_type, {"name": "source"})
     match adjustment_type:
         case "ShaderNodeRGBToBW":
@@ -477,7 +441,7 @@ def create_adjustment_graph(layer: "Layer"):
 def create_gradient_graph(layer: "Layer"):
     gradient_type = layer.gradient_type
     empty_object = layer.empty_object
-    builder = PSNodeTreeBuilder(layer, GRADIENT_LAYER_VERSION, "source", "Color", "source", "Alpha")
+    builder = PSNodeTreeBuilder(layer, LAYER_TYPES["GRADIENT"].version, "source", "Color", "source", "Alpha")
     builder.add_node("source", "ShaderNodeValToRGB", {"name": "source"})
     match gradient_type:
         case "LINEAR":
@@ -517,7 +481,7 @@ def create_gradient_graph(layer: "Layer"):
     return builder
 
 def create_random_graph(layer: "Layer"):
-    builder = PSNodeTreeBuilder(layer, RANDOM_LAYER_VERSION, "hue_saturation_value", "Color")
+    builder = PSNodeTreeBuilder(layer, LAYER_TYPES["RANDOM"].version, "hue_saturation_value", "Color")
     builder.add_node("object_info", "ShaderNodeObjectInfo")
     builder.add_node("white_noise", "ShaderNodeTexWhiteNoise", {"noise_dimensions": "1D"})
     builder.add_node("add", "ShaderNodeMath", {"operation": "ADD"})
@@ -549,9 +513,9 @@ def create_custom_graph(layer: "Layer"):
     color_output = parse_socket_name(layer, layer.color_output_name, None)
     alpha_output = parse_socket_name(layer, layer.alpha_output_name, None)
     if alpha_output:
-        builder = PSNodeTreeBuilder(layer, CUSTOM_LAYER_VERSION, "source" if color_output else None, color_output, "source" if alpha_output else None, alpha_output)
+        builder = PSNodeTreeBuilder(layer, LAYER_TYPES["NODE_GROUP"].version, "source" if color_output else None, color_output, "source" if alpha_output else None, alpha_output)
     else:
-        builder = PSNodeTreeBuilder(layer, CUSTOM_LAYER_VERSION, "source" if color_output else None, color_output)
+        builder = PSNodeTreeBuilder(layer, LAYER_TYPES["NODE_GROUP"].version, "source" if color_output else None, color_output)
     builder.add_node("source", "ShaderNodeGroup", {"node_tree": custom_node_tree, "name": "source"})
     if color_input:
         builder.link("group_input", "source", "Color", color_input)
@@ -564,9 +528,9 @@ def create_texture_graph(layer: "Layer"):
     alpha_socket = parse_socket_name(layer, layer.alpha_output_name, None)
     texture_type = get_texture_identifier(layer.texture_type)
     if alpha_socket:
-        builder = PSNodeTreeBuilder(layer, TEXTURE_LAYER_VERSION, "source", color_socket, "source", alpha_socket)
+        builder = PSNodeTreeBuilder(layer, LAYER_TYPES["TEXTURE"].version, "source", color_socket, "source", alpha_socket)
     else:
-        builder = PSNodeTreeBuilder(layer, TEXTURE_LAYER_VERSION, "source", color_socket)
+        builder = PSNodeTreeBuilder(layer, LAYER_TYPES["TEXTURE"].version, "source", color_socket)
     builder.add_node("source", texture_type, {"name": "source"})
     builder.create_coord_graph('source', 'Vector')
     return builder
@@ -601,7 +565,7 @@ def create_geometry_graph(layer: "Layer"):
     else:
         color_node_name = "geometry"
         color_socket = output_name_map[geometry_type]
-    builder = PSNodeTreeBuilder(layer, GEOMETRY_LAYER_VERSION, color_node_name, color_socket)
+    builder = PSNodeTreeBuilder(layer, LAYER_TYPES["GEOMETRY"].version, color_node_name, color_socket)
     if geometry_type == 'VECTOR_TRANSFORM':
         builder.link("group_input", "geometry", "Color", "Vector")
     elif geometry_type in ['WORLD_NORMAL', 'WORLD_TRUE_NORMAL', 'OBJECT_NORMAL'] and normalize_normals:
@@ -629,29 +593,20 @@ def get_alpha_over_nodetree():
     builder.compile()
     return node_tree
 
+# 레지스트리의 build_graph 이름을 이 모듈의 실제 빌더 함수로 해석한다.
+# (레지스트리는 bpy 비의존이라 함수 참조를 직접 담을 수 없다)
+_LAYER_GRAPH_BUILDERS = {
+    spec.id: globals()[spec.build_graph]
+    for spec in LAYER_TYPES.values()
+    if spec.build_graph
+}
+
+
 def create_layer_graph(layer: "Layer"):
-    layer_graph = None
-    match layer.type:
-        case "IMAGE":
-            layer_graph = create_image_graph(layer)
-        case "FOLDER":
-            layer_graph = create_folder_graph(layer)
-        case "SOLID_COLOR":
-            layer_graph = create_solid_graph(layer)
-        case "ATTRIBUTE":
-            layer_graph = create_attribute_graph(layer)
-        case "ADJUSTMENT":
-            layer_graph = create_adjustment_graph(layer)
-        case "GRADIENT":
-            layer_graph = create_gradient_graph(layer)
-        case "RANDOM":
-            layer_graph = create_random_graph(layer)
-        case "NODE_GROUP":
-            layer_graph = create_custom_graph(layer)
-        case "TEXTURE":
-            layer_graph = create_texture_graph(layer)
-        case "GEOMETRY":
-            layer_graph = create_geometry_graph(layer)
+    builder = _LAYER_GRAPH_BUILDERS.get(layer.type)
+    if not builder:
+        return None
+    layer_graph = builder(layer)
     if not layer_graph:
         return None
     return layer_graph
