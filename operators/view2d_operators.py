@@ -104,7 +104,9 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
     """2D 텍스처 뷰를 열거나 닫는다 (뷰포트 분할 + UV 평면 캔버스)"""
     bl_idname = "paint_system.toggle_2d_view"
     bl_label = "Toggle 2D View"
-    bl_options = {'REGISTER'}
+    # UNDO 필수: 셋업 완료 상태를 undo 스텝으로 남겨야 이후 스트로크를
+    # undo해도 "캔버스가 존재하는 상태"로 복원된다 (없으면 셋업 이전으로 튐)
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
@@ -115,18 +117,6 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
         )
 
     def execute(self, context):
-        # 뷰 구성(모드 전환·영역 분할·캔버스 생성)이 undo 스택에 남으면
-        # Ctrl+Z가 페인팅을 지나 셋업까지 되감아 캔버스가 사라지고
-        # 오브젝트 모드로 튕긴다 — 전 과정을 undo에서 제외한다.
-        prefs = bpy.context.preferences.edit
-        prev_undo = prefs.use_global_undo
-        prefs.use_global_undo = False
-        try:
-            return self._execute_impl(context)
-        finally:
-            prefs.use_global_undo = prev_undo
-
-    def _execute_impl(self, context):
         scene = context.scene
         canvas = get_canvas_object(scene)
 
@@ -276,10 +266,81 @@ class PAINTSYSTEM_OT_CanvasSwitch(Operator):
         return {'PASS_THROUGH'}
 
 
+def _heal_canvas_now():
+    """undo가 캔버스 생성 이전으로 넘어간 경우 상태를 정리한다.
+
+    유령이 된 2D 영역(로컬 뷰 + 회전 잠금)을 닫고, 원본 오브젝트를
+    텍스처 페인트 모드로 복귀시킨다 — 캔버스 소멸로 모드가 풀리는 문제 방지.
+    """
+    ctx = bpy.context
+    scene = ctx.scene
+    if scene is None:
+        return None
+    name = scene.get(KEY_CANVAS)
+    if not name or bpy.data.objects.get(name) is not None:
+        return None  # 캔버스 살아 있음 — 할 일 없음
+
+    for window in ctx.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            space = area.spaces.active
+            r3d = getattr(space, 'region_3d', None)
+            # 우리가 만든 2D 뷰 식별: 로컬 뷰 + 회전 잠금
+            if space.local_view and r3d is not None and getattr(r3d, 'lock_rotation', False):
+                try:
+                    with ctx.temp_override(window=window, area=area):
+                        bpy.ops.screen.area_close()
+                except RuntimeError:
+                    pass
+                break
+
+    src = bpy.data.objects.get(scene.get(KEY_SOURCE) or "")
+    if src is not None and src.name in ctx.view_layer.objects:
+        ctx.view_layer.objects.active = src
+        if ctx.mode != 'PAINT_TEXTURE':
+            try:
+                bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+            except RuntimeError:
+                pass
+    try:
+        del scene[KEY_CANVAS]
+    except KeyError:
+        pass
+    return None
+
+
+from bpy.app.handlers import persistent
+
+
+@persistent
+def _heal_after_undo(_scene, _depsgraph=None):
+    # undo 처리 도중에는 화면 조작이 위험하므로 타이머로 한 박자 미룬다
+    ctx_scene = bpy.context.scene
+    if ctx_scene is None or not ctx_scene.get(KEY_CANVAS):
+        return
+    if bpy.data.objects.get(ctx_scene.get(KEY_CANVAS)) is None:
+        bpy.app.timers.register(_heal_canvas_now, first_interval=0.05)
+
+
 classes = (
     PAINTSYSTEM_OT_Toggle2DView,
     PAINTSYSTEM_OT_Refresh2DCanvas,
     PAINTSYSTEM_OT_CanvasSwitch,
 )
 
-register, unregister = bpy.utils.register_classes_factory(classes)
+_register, _unregister = bpy.utils.register_classes_factory(classes)
+
+
+def register():
+    _register()
+    if _heal_after_undo not in bpy.app.handlers.undo_post:
+        bpy.app.handlers.undo_post.append(_heal_after_undo)
+
+
+def unregister():
+    try:
+        bpy.app.handlers.undo_post.remove(_heal_after_undo)
+    except ValueError:
+        pass
+    _unregister()
