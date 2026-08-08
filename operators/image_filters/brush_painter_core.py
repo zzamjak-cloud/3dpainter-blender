@@ -53,6 +53,9 @@ class UVSeamEdge:
 class UVSeamIndex:
     edges: List[UVSeamEdge]
     tile_to_edges: Dict[int, List[int]]
+    # tile → (gx, gy) → edge indices. 조회 시 브러시 AABB가 덮는 셀만 스캔한다.
+    tile_grids: Dict[int, Dict[Tuple[int, int], List[int]]]
+    cell_size: Dict[int, float]
 
 
 @dataclass
@@ -765,21 +768,38 @@ class BrushPainterCore:
         for edge_index, seam_edge in enumerate(seam_edges):
             tile_to_edges.setdefault(seam_edge.tile_num, []).append(edge_index)
 
-        # if DEBUG_SEAM:
-        #     matched = sum(1 for e in seam_edges if e.counterpart_index >= 0)
-        #     logger.debug(f"[SEAM] Built {len(seam_edges)} seam edges ({len(seam_edges)//2} pairs), "
-        #           f"{matched}/{len(seam_edges)} matched")
-        #     for ei, se in enumerate(seam_edges):
-        #         cp = se.counterpart_index
-        #         cp_tile = seam_edges[cp].tile_num if cp >= 0 else None
-        #         logger.debug(f"  edge[{ei}] tile={se.tile_num} verts=({se.vert0},{se.vert1}) "
-        #               f"px0=({se.px0[0]:.1f},{se.px0[1]:.1f}) px1=({se.px1[0]:.1f},{se.px1[1]:.1f}) "
-        #               f"face_side={se.face_side} len_uv={se.length_uv:.4f} "
-        #               f"counterpart={cp}(tile={cp_tile})")
-        #     for tile_num, indices in tile_to_edges.items():
-        #         logger.debug(f"  tile {tile_num}: {len(indices)} seam edges")
+        # 타일별 그리드 버킷 — 스탬프마다 전 엣지 선형 스캔을 피한다
+        tile_grids: Dict[int, Dict[Tuple[int, int], List[int]]] = {}
+        cell_size: Dict[int, float] = {}
+        for tile_num, indices in tile_to_edges.items():
+            shape = tile_shapes.get(tile_num)
+            if shape is None:
+                continue
+            tile_h, tile_w = shape
+            cell = max(32.0, max(tile_w, tile_h) / 32.0)
+            cell_size[tile_num] = cell
+            grid: Dict[Tuple[int, int], List[int]] = {}
+            for edge_index in indices:
+                se = seam_edges[edge_index]
+                min_x = min(se.px0[0], se.px1[0])
+                max_x = max(se.px0[0], se.px1[0])
+                min_y = min(se.px0[1], se.px1[1])
+                max_y = max(se.px0[1], se.px1[1])
+                gx0 = int(np.floor(min_x / cell))
+                gx1 = int(np.floor(max_x / cell))
+                gy0 = int(np.floor(min_y / cell))
+                gy1 = int(np.floor(max_y / cell))
+                for gy in range(gy0, gy1 + 1):
+                    for gx in range(gx0, gx1 + 1):
+                        grid.setdefault((gx, gy), []).append(edge_index)
+            tile_grids[tile_num] = grid
 
-        return UVSeamIndex(edges=seam_edges, tile_to_edges=tile_to_edges)
+        return UVSeamIndex(
+            edges=seam_edges,
+            tile_to_edges=tile_to_edges,
+            tile_grids=tile_grids,
+            cell_size=cell_size,
+        )
 
     def _find_nearest_intersecting_edge(
         self,
@@ -792,10 +812,6 @@ class BrushPainterCore:
         if self._seam_index is None:
             return -1
 
-        edge_indices = self._seam_index.tile_to_edges.get(tile_num, [])
-        if not edge_indices:
-            return -1
-
         half_w = brush_w * 0.5
         half_h = brush_h * 0.5
         rect = (
@@ -804,6 +820,27 @@ class BrushPainterCore:
             center_y - half_h,
             center_y + half_h,
         )
+
+        cell = self._seam_index.cell_size.get(tile_num)
+        grid = self._seam_index.tile_grids.get(tile_num)
+        if cell and grid:
+            gx0 = int(np.floor(rect[0] / cell))
+            gx1 = int(np.floor(rect[1] / cell))
+            gy0 = int(np.floor(rect[2] / cell))
+            gy1 = int(np.floor(rect[3] / cell))
+            edge_indices = []
+            seen = set()
+            for gy in range(gy0, gy1 + 1):
+                for gx in range(gx0, gx1 + 1):
+                    for ei in grid.get((gx, gy), ()):
+                        if ei not in seen:
+                            seen.add(ei)
+                            edge_indices.append(ei)
+        else:
+            edge_indices = self._seam_index.tile_to_edges.get(tile_num, [])
+
+        if not edge_indices:
+            return -1
 
         nearest_edge_index = -1
         nearest_dist_sq = float('inf')
@@ -1243,20 +1280,31 @@ class BrushPainterCore:
         total_strokes_applied = 0
         progress_step = max(1, total_strokes // 50) if total_strokes else 1
         for tile_num, step_data_list in steps_by_tile.items():
+            tile_state = tile_states[tile_num]
             for step_data in step_data_list:
-                for sample_index in range(step_data.num_samples):
-                    y = int(step_data.random_y[sample_index])
-                    x = int(step_data.random_x[sample_index])
-                    brush_index = np.random.randint(0, len(step_data.scaled_brush_list))
+                n = step_data.num_samples
+                if n <= 0:
+                    continue
+                # 시드 재현성: 브러시 인덱스는 필터 전에 전부 뽑는다
+                brush_indices = np.random.randint(
+                    0, len(step_data.scaled_brush_list), size=n)
+                ys = step_data.random_y.astype(np.int32, copy=False)
+                xs = step_data.random_x.astype(np.int32, copy=False)
+                # 알파·그라디언트 사전필터로 스킵될 스탬프의 파이썬 호출을 줄인다
+                keep = tile_state.g_normalized[ys, xs] >= self.gradient_threshold
+                if tile_state.has_alpha:
+                    keep &= tile_state.img_blurred[ys, xs, 3] > 1e-6
+                for sample_index in np.nonzero(keep)[0]:
+                    y = int(ys[sample_index])
+                    x = int(xs[sample_index])
+                    brush_index = int(brush_indices[sample_index])
                     selected_brush = step_data.scaled_brush_list[brush_index]
-                    
-                    # Track rotation angles for statistics
+
                     if DEBUG_ROTATION and total_strokes_applied < 1000:
-                        tile_state = tile_states[tile_num]
                         angle_rad = tile_state.theta[y, x]
                         angle_deg = float(np.rad2deg(angle_rad))
                         rotation_angles.append(angle_deg)
-                    
+
                     self._apply_stamp_with_optional_duplicate(
                         tile_states,
                         tile_num,
@@ -1268,10 +1316,18 @@ class BrushPainterCore:
                         brush_index,
                     )
                     total_strokes_applied += 1
-                    # UI 왕복을 매 스탬프마다 하지 않도록 스로틀
                     if brush_callback and (
                         total_strokes_applied == 1
                         or total_strokes_applied % progress_step == 0
+                        or total_strokes_applied >= total_strokes
+                    ):
+                        brush_callback(total_strokes, total_strokes_applied)
+                # 필터로 건너뛴 샘플도 진행률 분모(total_strokes)와 맞추기 위해 카운트
+                skipped = int(n - np.count_nonzero(keep))
+                if skipped:
+                    total_strokes_applied += skipped
+                    if brush_callback and (
+                        total_strokes_applied % progress_step == 0
                         or total_strokes_applied >= total_strokes
                     ):
                         brush_callback(total_strokes, total_strokes_applied)
