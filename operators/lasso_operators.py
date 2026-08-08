@@ -46,6 +46,63 @@ def _in_canvas_view(space, canvas) -> bool:
         return False
 
 
+def _set_stencil_overlay(context, visible: bool) -> None:
+    """스텐실 오버레이(차단 영역을 어둡게 틴트)를 켜거나 끈다.
+
+    포토샵은 선택 밖을 어둡게 표시하지 않으므로 기본은 끔 — 마스킹 기능은
+    그대로 동작하고, 시각 피드백은 점선 윤곽선이 담당한다.
+    """
+    for area in context.screen.areas:
+        if area.type != 'VIEW_3D':
+            continue
+        overlay = area.spaces.active.overlay
+        if hasattr(overlay, 'texture_paint_mode_opacity'):
+            overlay.texture_paint_mode_opacity = 1.0 if visible else 0.0
+
+
+def _draw_dashed(coords, dash: float = 5.0):
+    """닫힌 폴리라인을 점선 세그먼트 두 묶음(흑/백 교차)으로 나눈다."""
+    import math
+    segs_white, segs_black = [], []
+    acc = 0.0
+    for i in range(len(coords) - 1):
+        ax, ay = coords[i][0], coords[i][1]
+        bx, by = coords[i + 1][0], coords[i + 1][1]
+        seg_len = math.hypot(bx - ax, by - ay)
+        if seg_len < 1e-6:
+            continue
+        dx, dy = (bx - ax) / seg_len, (by - ay) / seg_len
+        t = 0.0
+        while t < seg_len:
+            t2 = min(t + dash, seg_len)
+            pair = (
+                (ax + dx * t, ay + dy * t, 0.0),
+                (ax + dx * t2, ay + dy * t2, 0.0),
+            )
+            if int((acc + t) / dash) % 2 == 0:
+                segs_white.extend(pair)
+            else:
+                segs_black.extend(pair)
+            t = t2
+        acc += seg_len
+    return segs_white, segs_black
+
+
+def _draw_marching_ants(coords) -> None:
+    """포토샵식 흑백 교차 점선 (1px, Metal 호환)."""
+    segs_white, segs_black = _draw_dashed(coords)
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    for segs, color in ((segs_black, (0.0, 0.0, 0.0, 1.0)),
+                        (segs_white, (1.0, 1.0, 1.0, 1.0))):
+        if not segs:
+            continue
+        batch = batch_for_shader(shader, 'LINES', {"pos": segs})
+        shader.uniform_float("color", color)
+        batch.draw(shader)
+    gpu.state.blend_set('NONE')
+
+
 def _outline_draw():
     ctx = bpy.context
     region = ctx.region
@@ -72,8 +129,7 @@ def _outline_draw():
         if len(coords) < 3:
             continue
         coords.append(coords[0])
-        color = (1.0, 0.4, 0.4, 0.9) if mode == 'SUBTRACT' else (1.0, 1.0, 1.0, 0.9)
-        _draw_polyline(region, coords, color)
+        _draw_marching_ants(coords)
 
 
 def _outline_ensure_handler() -> None:
@@ -182,6 +238,8 @@ def _apply_stencil(context, mask_img) -> None:
             mesh = obj.data
             # 스텐실 UV = 페인팅에 쓰는 활성 UV
             mesh.uv_layer_stencil_index = mesh.uv_layers.active_index
+    # 포토샵처럼 화면 틴트(검게 표시) 없이 마스킹만 동작시킨다
+    _set_stencil_overlay(context, False)
 
 
 class PAINTSYSTEM_OT_LassoSelect(Operator):
@@ -350,6 +408,37 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
         return {'FINISHED'}
 
 
+class PAINTSYSTEM_OT_DeselectOnEmptyClick(Operator):
+    """2D 뷰의 캔버스 밖 빈 공간을 클릭하면 선택을 해제한다 (포토샵과 동일).
+    이벤트는 그대로 통과시킨다"""
+    bl_idname = "paint_system.deselect_on_empty_click"
+    bl_label = "Deselect on Empty Click"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'PAINT_TEXTURE'
+            and context.tool_settings.image_paint.use_stencil_layer
+            and get_canvas_object(context.scene) is not None
+        )
+
+    def invoke(self, context, event):
+        space = context.space_data
+        canvas = get_canvas_object(context.scene)
+        if (
+            space is not None and space.type == 'VIEW_3D'
+            and context.region is not None
+            and _in_canvas_view(space, canvas)
+        ):
+            u, v = _region_to_uv(
+                context, context.region,
+                (event.mouse_region_x, event.mouse_region_y))
+            if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+                bpy.ops.paint_system.clear_selection()
+        return {'PASS_THROUGH'}
+
+
 class PAINTSYSTEM_OT_ClearSelection(Operator):
     """선택 영역을 해제한다 (스텐실 마스크 끄기)"""
     bl_idname = "paint_system.clear_selection"
@@ -363,6 +452,7 @@ class PAINTSYSTEM_OT_ClearSelection(Operator):
     def execute(self, context):
         context.tool_settings.image_paint.use_stencil_layer = False
         _outline_clear()
+        _set_stencil_overlay(context, True)
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
@@ -390,6 +480,7 @@ class PAINTSYSTEM_OT_InvertSelection(Operator):
 classes = (
     PAINTSYSTEM_OT_LassoSelect,
     PAINTSYSTEM_OT_FillSelection,
+    PAINTSYSTEM_OT_DeselectOnEmptyClick,
     PAINTSYSTEM_OT_ClearSelection,
     PAINTSYSTEM_OT_InvertSelection,
 )

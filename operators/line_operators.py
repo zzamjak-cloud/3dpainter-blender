@@ -33,7 +33,9 @@ def _brush_step_px(context) -> tuple[float, float]:
     if ups is not None and getattr(ups, 'use_unified_size', False):
         size = ups.size
     spacing = max(getattr(brush, 'spacing', 10), 1)
-    return float(size), max(1.0, float(size) * spacing / 100.0)
+    # 네이티브 스트로크의 스탬프 간격은 지름 기준 퍼센트다.
+    # 반지름 기준으로 계산하면 2배 촘촘해져 알파가 누적돼 선이 굵어 보인다.
+    return float(size), max(1.0, float(size) * 2.0 * spacing / 100.0)
 
 
 class PAINTSYSTEM_OT_RecordStrokeAnchor(Operator):

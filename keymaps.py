@@ -121,6 +121,15 @@ def register() -> None:
                 **_mods,
             )
 
+        # 3DPainter 포크: 캔버스 밖 빈 공간 클릭 = 선택 해제 (포토샵과 동일)
+        _add_keymap_entry(
+            kc,
+            name=km_name,
+            space_type=space,
+            idname='paint_system.deselect_on_empty_click',
+            key='LEFTMOUSE',
+        )
+
         # 3DPainter 포크: Alt+Delete/Backspace = 선택 영역을 브러시 색으로 채우기
         # (맥 delete 키는 BACK_SPACE 코드로 들어온다)
         for _key in ('BACK_SPACE', 'DEL'):
