@@ -315,6 +315,9 @@ class BrushPainterCore:
         """Applies randomized HSV color shifts to a pixel based on shift parameters."""
         if len(pixel) < 3:
             return pixel
+        # 시프트가 모두 0이면 RGB↔HSV 왕복을 건너뛴다
+        if self.hue_shift <= 0 and self.saturation_shift <= 0 and self.value_shift <= 0:
+            return pixel
         
         # Convert RGB to HSV
         r, g, b = pixel[:3]
@@ -582,7 +585,6 @@ class BrushPainterCore:
 
         canvas_region = state.canvas[clip_y0:clip_y1, clip_x0:clip_x1]
         brush_slice = rotated_brush[brush_y0:brush_y1, brush_x0:brush_x1]
-        brush_color_layer = np.tile(sampled_pixel[:3], (clip_h, clip_w, 1))
         final_alpha = brush_slice * sampled_alpha * opacity
         final_alpha_3d = final_alpha[..., np.newaxis]
 
@@ -590,7 +592,8 @@ class BrushPainterCore:
         canvas_alpha = canvas_region[:, :, 3:4]
 
         out_alpha = final_alpha_3d + canvas_alpha * (1.0 - final_alpha_3d)
-        numerator = brush_color_layer * final_alpha_3d + canvas_rgb * canvas_alpha * (1.0 - final_alpha_3d)
+        # (3,) 색을 (H,W,3)에 브로드캐스트 — np.tile 전체 할당을 피한다
+        numerator = sampled_pixel[:3] * final_alpha_3d + canvas_rgb * canvas_alpha * (1.0 - final_alpha_3d)
 
         safe_alpha = np.copy(out_alpha)
         safe_alpha[safe_alpha < 0.0001] = 1.0
@@ -1238,6 +1241,7 @@ class BrushPainterCore:
             rotation_angles = []
         
         total_strokes_applied = 0
+        progress_step = max(1, total_strokes // 50) if total_strokes else 1
         for tile_num, step_data_list in steps_by_tile.items():
             for step_data in step_data_list:
                 for sample_index in range(step_data.num_samples):
@@ -1264,7 +1268,12 @@ class BrushPainterCore:
                         brush_index,
                     )
                     total_strokes_applied += 1
-                    if brush_callback:
+                    # UI 왕복을 매 스탬프마다 하지 않도록 스로틀
+                    if brush_callback and (
+                        total_strokes_applied == 1
+                        or total_strokes_applied % progress_step == 0
+                        or total_strokes_applied >= total_strokes
+                    ):
                         brush_callback(total_strokes, total_strokes_applied)
         
         # Print rotation statistics

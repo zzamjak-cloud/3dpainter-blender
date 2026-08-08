@@ -286,19 +286,77 @@ def update_active_group(self, context):
 def find_channels_containing_layer(check_layer: "Layer") -> list["Channel"]:
     """Find all channels that reference *check_layer* (directly or via link)."""
     # 링크 레이어는 다른 머티리얼에서 uid로 참조하므로 스캔 범위를 소유 머티리얼로 줄일 수 없다
+    check_uid = check_layer.uid
     channels = []
     seen = set()
-    check_uid = check_layer.uid
-    for _mat, _grp, channel, layer in iter_all_layers():
-        # uid가 비어 있으면 링크되지 않은 레이어 전부와 매칭되므로 직접 참조만 본다
-        if layer != check_layer and not (check_uid and layer.linked_layer_uid == check_uid):
+    if not check_uid:
+        # uid가 비어 있으면 인덱스 키로 묶을 수 없어 직접 참조만 본다
+        for _mat, _grp, channel, layer in iter_all_layers():
+            if layer != check_layer:
+                continue
+            ch_id = channel.as_pointer()
+            if ch_id in seen:
+                continue
+            seen.add(ch_id)
+            channels.append(channel)
+        return channels
+
+    for channel in _get_layer_uid_channel_index().get(check_uid, ()):
+        try:
+            ch_id = channel.as_pointer()
+        except ReferenceError:
             continue
-        ch_id = channel.as_pointer()
         if ch_id in seen:
             continue
         seen.add(ch_id)
         channels.append(channel)
     return channels
+
+
+# uid → 해당 uid를 소유하거나 링크하는 채널 목록
+_layer_uid_channel_index: Optional[dict[str, list["Channel"]]] = None
+_layer_uid_channel_index_uses: int = 0
+_LAYER_UID_CHANNEL_INDEX_MAX_USES = 60
+
+
+def invalidate_layer_uid_channel_index():
+    """레이어 추가/삭제/링크·언두 시 uid→채널 인덱스를 버린다."""
+    global _layer_uid_channel_index, _layer_uid_channel_index_uses
+    _layer_uid_channel_index = None
+    _layer_uid_channel_index_uses = 0
+
+
+def _get_layer_uid_channel_index() -> dict[str, list["Channel"]]:
+    """레이어 uid / linked_layer_uid → 채널 목록 인덱스를 돌려준다."""
+    global _layer_uid_channel_index, _layer_uid_channel_index_uses
+    if (_layer_uid_channel_index is not None
+            and _layer_uid_channel_index_uses < _LAYER_UID_CHANNEL_INDEX_MAX_USES):
+        _layer_uid_channel_index_uses += 1
+        return _layer_uid_channel_index
+
+    index: dict[str, list] = {}
+    seen: dict[str, set] = {}
+    for _mat, _grp, channel, layer in iter_all_layers():
+        try:
+            ch_id = channel.as_pointer()
+        except ReferenceError:
+            continue
+        keys = []
+        if layer.uid:
+            keys.append(layer.uid)
+        if layer.linked_layer_uid:
+            keys.append(layer.linked_layer_uid)
+        for key in keys:
+            bucket_seen = seen.setdefault(key, set())
+            if ch_id in bucket_seen:
+                continue
+            bucket_seen.add(ch_id)
+            index.setdefault(key, []).append(channel)
+
+    _layer_uid_channel_index = index
+    _layer_uid_channel_index_uses = 0
+    return index
+
 
 def get_node_from_nodetree(node_tree: NodeTree, identifier: str) -> Node | None:
     """Find a node by its label in a node tree."""
@@ -2146,6 +2204,7 @@ class Channel(BaseNestedListManager):
         layer.auto_update_node_tree = True
         layer.update_node_tree(context)
         self.update_node_tree(context)
+        invalidate_layer_uid_channel_index()
         return layer
     
     def set_active_index_to_layer(self, context, layer: "Layer"):
@@ -2177,6 +2236,7 @@ class Channel(BaseNestedListManager):
         self.active_index = min(
             self.active_index, len(self.layers) - 1)
         self.update_node_tree(context)
+        invalidate_layer_uid_channel_index()
     
     def delete_layers(self, context, layers: list["Layer"]):
         # Sort layer by index in descending order

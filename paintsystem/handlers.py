@@ -2,7 +2,15 @@ import bpy
 
 from .versioning import get_layer_parent_map, migrate_global_layer_data, migrate_blend_mode, migrate_source_node, migrate_socket_names, update_layer_name, update_layer_version, update_library_nodetree_version
 from .context import parse_context
-from .data import sort_actions, get_action_layers, invalidate_action_layer_cache, is_valid_uuidv4, iter_all_layers, _invalidate_material_layer_cache
+from .data import (
+    sort_actions,
+    get_action_layers,
+    invalidate_action_layer_cache,
+    invalidate_layer_uid_channel_index,
+    is_valid_uuidv4,
+    iter_all_layers,
+    _invalidate_material_layer_cache,
+)
 from .image import save_image
 from .graph.basic_layers import get_layer_version_for_type
 import time
@@ -13,6 +21,9 @@ from ..utils.logging import get_logger
 logger = get_logger(__name__)
 
 _COLOR_HISTORY_PALETTE_NAME = "Paint System History"
+_PALETTE_DEBOUNCE_S = 0.35
+_pending_palette_color = None
+_palette_timer_running = False
 
 
 def get_ps_scene_data(scene: bpy.types.Scene):
@@ -30,6 +41,44 @@ def ensure_color_history_palette(ps_scene_data) -> bpy.types.Palette:
             palette = bpy.data.palettes.new(_COLOR_HISTORY_PALETTE_NAME)
         ps_scene_data.color_history_palette = palette
     return palette
+
+
+def _rebuild_color_history_palette(ps_scene_data, current_color) -> None:
+    """팔레트 맨 앞에 새 색을 넣고 최대 20색을 유지한다."""
+    palette = ensure_color_history_palette(ps_scene_data)
+    if len(palette.colors) > 0:
+        last_color = palette.colors[0].color
+        if (abs(last_color[0] - current_color[0]) < 0.001 and
+                abs(last_color[1] - current_color[1]) < 0.001 and
+                abs(last_color[2] - current_color[2]) < 0.001):
+            return
+
+    colors_to_save = [c.color[:] for c in palette.colors]
+    palette.colors.clear()
+    item = palette.colors.new()
+    item.color = (current_color[0], current_color[1], current_color[2])
+    for col in colors_to_save:
+        if len(palette.colors) >= 20:
+            break
+        item = palette.colors.new()
+        item.color = col
+
+
+def _flush_pending_palette_color():
+    """디바운스 타이머 콜백 — 스트로크 중 반복 재구축을 한 번으로 묶는다."""
+    global _pending_palette_color, _palette_timer_running
+    _palette_timer_running = False
+    color = _pending_palette_color
+    _pending_palette_color = None
+    if color is None:
+        return None
+    try:
+        ps_scene_data = get_ps_scene_data(bpy.context.scene)
+        if ps_scene_data:
+            _rebuild_color_history_palette(ps_scene_data, color)
+    except Exception as e:
+        logger.error(f"Color History Error: {e}")
+    return None
 
 @bpy.app.handlers.persistent
 def frame_change_pre(scene: bpy.types.Scene):
@@ -111,6 +160,7 @@ def load_post(scene):
     # 이전 파일의 Material 포인터가 캐시에 남아 있으면 죽은 RNA를 참조하게 된다
     _invalidate_material_layer_cache()
     invalidate_action_layer_cache()
+    invalidate_layer_uid_channel_index()
     ps_scene_data = get_ps_scene_data(bpy.context.scene)
     if not ps_scene_data:
         return
@@ -122,6 +172,7 @@ def undo_redo_post(scene):
     # 언두/리두는 데이터를 통째로 되돌려 캐시에 담긴 Layer 포인터를 무효화시킨다
     _invalidate_material_layer_cache()
     invalidate_action_layer_cache()
+    invalidate_layer_uid_channel_index()
 
 
 @bpy.app.handlers.persistent
@@ -154,43 +205,28 @@ def refresh_image(scene: bpy.types.Scene):
 
 @bpy.app.handlers.persistent
 def color_history_handler(scene: bpy.types.Scene, depsgraph: bpy.types.Depsgraph = None):
+    global _pending_palette_color, _palette_timer_running
     ps_scene_data = get_ps_scene_data(bpy.context.scene)
     if not ps_scene_data:
         return
     if depsgraph and not depsgraph.id_type_updated('IMAGE'):
         return
-    # Color History
     try:
         ps_ctx = parse_context(bpy.context)
         active_layer = ps_ctx.active_layer
         if not active_layer:
             return
         image: bpy.types.Image = active_layer.image
-        if active_layer and active_layer.type == "IMAGE" and image and image.is_dirty:
-            palette = ensure_color_history_palette(ps_scene_data)
-            current_color = ps_scene_data.get_brush_color(bpy.context)
-            
-            should_add = True
-            if len(palette.colors) > 0:
-                last_color = palette.colors[0].color
-                if (abs(last_color[0] - current_color[0]) < 0.001 and 
-                    abs(last_color[1] - current_color[1]) < 0.001 and 
-                    abs(last_color[2] - current_color[2]) < 0.001):
-                    should_add = False
-            
-            if should_add:
-                colors_to_save = [c.color[:] for c in palette.colors]
-                palette.colors.clear()
-
-                item = palette.colors.new()
-                item.color = (current_color[0], current_color[1], current_color[2])
-                # logger.debug(f"Color added: {item.color[:]}")
-                
-                for col in colors_to_save:
-                    if len(palette.colors) >= 20:
-                        break
-                    item = palette.colors.new()
-                    item.color = col
+        if active_layer.type != "IMAGE" or not image or not image.is_dirty:
+            return
+        current_color = ps_scene_data.get_brush_color(bpy.context)
+        _pending_palette_color = (
+            float(current_color[0]), float(current_color[1]), float(current_color[2]))
+        # 스트로크마다 즉시 clear/rebuild 하지 않고 디바운스한다
+        if not _palette_timer_running:
+            _palette_timer_running = True
+            bpy.app.timers.register(
+                _flush_pending_palette_color, first_interval=_PALETTE_DEBOUNCE_S)
     except Exception as e:
         logger.error(f"Color History Error: {e}")
         pass

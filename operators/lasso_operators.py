@@ -306,15 +306,13 @@ def _rasterize_polygon(width: int, height: int, uv_points) -> np.ndarray:
 
 
 def _dilate3(m: np.ndarray) -> np.ndarray:
-    """3x3 최대값 필터 — 희소 텍셀 마크의 구멍 메움(클로징)용."""
+    """3x3 최대값 필터 — 희소 텍셀 마크의 구멍 메움(클로징)용.
+
+    max는 분리 가능하므로 가로·세로 1D max로 9회 비교를 3+3회로 줄인다.
+    """
     pad = np.pad(m, 1, mode='constant')
-    out = pad[1:-1, 1:-1].copy()
-    for dy in (0, 1, 2):
-        for dx in (0, 1, 2):
-            if dy == 1 and dx == 1:
-                continue
-            np.maximum(out, pad[dy:dy + m.shape[0], dx:dx + m.shape[1]], out=out)
-    return out
+    horiz = np.maximum(np.maximum(pad[:, 0:-2], pad[:, 1:-1]), pad[:, 2:])
+    return np.maximum(np.maximum(horiz[0:-2, :], horiz[1:-1, :]), horiz[2:, :])
 
 
 _uv_shader_cache = {}
