@@ -33,6 +33,18 @@ class PSProjectionTexItem(PropertyGroup):
     def get_image(self):
         return bpy.data.images.get(self.image_name)
 
+    def ensure_image(self):
+        """이미지가 없으면 파일에서 다시 로드한다 (poll/draw에서는 호출 금지 —
+        ID 쓰기가 막혀 있으므로 invoke/execute에서만)."""
+        img = bpy.data.images.get(self.image_name)
+        if img is None and self.filepath and os.path.isfile(self.filepath):
+            try:
+                img = bpy.data.images.load(self.filepath, check_existing=True)
+                self.image_name = img.name
+            except RuntimeError:
+                return None
+        return img
+
 
 def _active_item(context):
     scene = context.scene
@@ -218,17 +230,29 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
     @classmethod
     def poll(cls, context):
         item = _active_item(context)
-        ps_ctx = PSContextMixin.parse_context(context)
-        return (
-            item is not None and item.get_image() is not None
-            and context.mode == 'PAINT_TEXTURE'
-            and ps_ctx.active_channel is not None
-        )
+        if item is None:
+            return False
+        if item.get_image() is None and not os.path.isfile(item.filepath):
+            return False
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            return False
+        try:
+            return PSContextMixin.parse_context(context).active_channel is not None
+        except Exception:
+            return False
 
     def invoke(self, context, event):
         if context.area is None or context.area.type != 'VIEW_3D':
             self.report({'WARNING'}, "3D 뷰에서 실행하세요")
             return {'CANCELLED'}
+        # 페인트 모드가 아니면 자동 진입 (Apply의 project_image가 요구)
+        if context.mode != 'PAINT_TEXTURE':
+            try:
+                bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+            except RuntimeError:
+                self.report({'WARNING'}, "텍스처 페인트 모드로 전환할 수 없습니다")
+                return {'CANCELLED'}
         region = context.region
         if region is None:
             # 패널 버튼에서 호출되면 region이 UI 리전이므로 WINDOW 리전을 찾는다
@@ -238,7 +262,10 @@ class PAINTSYSTEM_OT_ProjectionPlace(PSContextMixin, Operator):
                 return {'CANCELLED'}
         self._region_ptr = region.as_pointer()
         self._item = _active_item(context)
-        img = self._item.get_image()
+        img = self._item.ensure_image()
+        if img is None:
+            self.report({'ERROR'}, "이미지를 불러올 수 없습니다 (파일 확인)")
+            return {'CANCELLED'}
         sw, sh = int(img.size[0]), int(img.size[1])
         if sw == 0 or sh == 0:
             self.report({'ERROR'}, "이미지를 읽을 수 없습니다")
