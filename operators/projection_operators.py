@@ -8,6 +8,7 @@
 import os
 import sys
 
+import blf
 import gpu
 import numpy as np
 from gpu_extras.batch import batch_for_shader
@@ -192,29 +193,6 @@ class PAINTSYSTEM_OT_ProjectionImport(Operator):
         return {'FINISHED'}
 
 
-class PAINTSYSTEM_OT_ProjectionSelect(Operator):
-    """투사 이미지를 선택한다 (그리드 썸네일 클릭)"""
-    bl_idname = "paint_system.projection_select"
-    bl_label = "Select Projection Image"
-    bl_options = {'INTERNAL'}
-
-    index: IntProperty()
-
-    @classmethod
-    def description(cls, context, properties):
-        # 호버 툴팁 = 이미지 이름
-        items = context.scene.ps_projection_textures
-        if 0 <= properties.index < len(items):
-            return items[properties.index].name
-        return ""
-
-    def execute(self, context):
-        scene = context.scene
-        if 0 <= self.index < len(scene.ps_projection_textures):
-            scene.ps_projection_active_index = self.index
-        return {'FINISHED'}
-
-
 class PAINTSYSTEM_OT_ProjectionRemove(Operator):
     """선택한 투사 이미지를 목록에서 제거한다"""
     bl_idname = "paint_system.projection_remove"
@@ -233,8 +211,10 @@ class PAINTSYSTEM_OT_ProjectionRemove(Operator):
         if img is not None and img.users <= 1:
             bpy.data.images.remove(img)
         scene.ps_projection_textures.remove(idx)
-        scene.ps_projection_active_index = min(
-            idx, len(scene.ps_projection_textures) - 1)
+        scene.ps_projection_active_index = max(
+            0, min(idx, len(scene.ps_projection_textures) - 1))
+        # 같은 경로로 재등록 시 낡은 썸네일이 남지 않도록 프리뷰 캐시 초기화
+        _clear_previews()
         return {'FINISHED'}
 
 
@@ -296,7 +276,7 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
         self._add_view3d_draw_handler(self._draw, ())
         context.window_manager.modal_handler_add(self)
         context.area.header_text_set(
-            "투사 배치 — 드래그: 이동 · 휠: 크기 · Enter: 적용 · ESC: 취소")
+            "Place Projection — Drag: Move · Wheel: Scale · Enter: Apply · Esc: Cancel")
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
 
@@ -369,6 +349,25 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
             shader.uniform_sampler("image", tex)
             batch.draw(shader)
             gpu.state.blend_set('NONE')
+        except Exception:
+            pass
+        self._draw_hint_text(region)
+
+    def _draw_hint_text(self, region):
+        # 배치 중 안내 텍스트 (POST_PIXEL — 리전 픽셀 좌표)
+        try:
+            font_id = 0
+            ui_scale = bpy.context.preferences.system.ui_scale
+            blf.size(font_id, int(15 * ui_scale))
+            text = "Press Enter to apply  ·  Esc to cancel"
+            text_w, _ = blf.dimensions(font_id, text)
+            blf.enable(font_id, blf.SHADOW)
+            blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.9)
+            blf.shadow_offset(font_id, 1, -1)
+            blf.position(font_id, (region.width - text_w) * 0.5, 28 * ui_scale, 0)
+            blf.color(font_id, 1.0, 1.0, 1.0, 1.0)
+            blf.draw(font_id, text)
+            blf.disable(font_id, blf.SHADOW)
         except Exception:
             pass
 

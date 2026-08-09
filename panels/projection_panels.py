@@ -26,35 +26,28 @@ class MAT_PT_PaintSystemProjectionTex(Panel):
         layout = self.layout
         scene = context.scene
 
-        # 항상 펼쳐진 썸네일 그리드 — 호버 시 이름, 클릭(체크 버튼)으로 선택
-        from ..operators.projection_operators import _thumb_icon_id
+        # 활성 썸네일 표시 — 클릭 시 프리뷰 팝업 그리드에서 선택
         items = scene.ps_projection_textures
         if len(items):
-            scale = scene.ps_projection_thumb_scale
-            grid = layout.grid_flow(
-                row_major=True, columns=0, even_columns=True, align=False)
+            col = layout.column(align=True)
+            col.template_icon_view(
+                scene, "ps_projection_enum",
+                show_labels=True,
+                scale=scene.ps_projection_thumb_scale,
+                scale_popup=5.0,
+            )
             active = scene.ps_projection_active_index
-            for i, item in enumerate(items):
-                cell = grid.box() if i == active else grid.column()
-                col = cell.column(align=True)
-                col.template_icon(
-                    icon_value=_thumb_icon_id(item), scale=scale)
-                op = col.operator(
-                    "paint_system.projection_select",
-                    text="",
-                    icon='RADIOBUT_ON' if i == active else 'RADIOBUT_OFF',
-                    depress=(i == active),
-                )
-                op.index = i
-        layout.prop(scene, "ps_projection_thumb_scale", slider=True)
+            if 0 <= active < len(items):
+                col.label(text=items[active].name)
+            layout.prop(scene, "ps_projection_thumb_scale", slider=True)
 
         row = layout.row(align=True)
         row.operator("paint_system.projection_import", text="Import", icon='IMPORT')
-        row.operator("paint_system.projection_remove", text="", icon='REMOVE')
+        row.operator("paint_system.projection_remove", text="Remove", icon='REMOVE')
 
         layout.operator(
             "paint_system.projection_place",
-            text="Place & Apply",
+            text="Place",
             icon='MOD_UVPROJECT',
         )
 
