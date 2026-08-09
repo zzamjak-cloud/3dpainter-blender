@@ -609,4 +609,12 @@ def create_layer_graph(layer: "Layer"):
     layer_graph = builder(layer)
     if not layer_graph:
         return None
+    # 레이어 공통 HSV 이펙트 — 색 소스가 있는 타입에만 색 체인 끝에 삽입
+    if (
+        getattr(layer, "use_hsv", False)
+        and isinstance(layer_graph, PSNodeTreeBuilder)
+        and layer_graph._color_source_node is not None
+    ):
+        layer_graph.add_node("layer_hsv", "ShaderNodeHueSaturation")
+        layer_graph.add_color_modifier("layer_hsv", "Color", "Color")
     return layer_graph

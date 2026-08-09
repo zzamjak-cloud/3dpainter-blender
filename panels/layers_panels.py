@@ -345,7 +345,27 @@ def draw_layer_settings(layout, context, ps_ctx=None):
                     col.prop(geo_node.inputs["Distance"], "default_value", text="Distance")
         case _:
             pass
-    
+
+    # 레이어 공통 HSV 이펙트
+    header, panel = layout.panel("layer_hsv_panel", default_closed=True)
+    row = header.row()
+    row.prop(active_layer, "use_hsv", text="")
+    row.label(text="HSV Adjust", icon='SHADERFX')
+    if panel:
+        box = panel.box()
+        col = box.column()
+        col.enabled = active_layer.use_hsv
+        hsv_node = active_layer.find_node("layer_hsv")
+        if hsv_node:
+            col.use_property_split = True
+            col.use_property_decorate = False
+            col.prop(hsv_node.inputs["Hue"], "default_value", text="Hue", slider=True)
+            col.prop(hsv_node.inputs["Saturation"], "default_value", text="Saturation", slider=True)
+            col.prop(hsv_node.inputs["Value"], "default_value", text="Value", slider=True)
+            col.prop(hsv_node.inputs["Fac"], "default_value", text="Factor", slider=True)
+        else:
+            col.label(text="Enable to apply HSV to this layer", icon='INFO')
+
     # Draw ui for adjustable sockets
     if active_layer.type == 'NODE_GROUP':
         header, panel = layout.panel("node_group_panel")

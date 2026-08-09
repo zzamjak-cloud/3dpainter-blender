@@ -691,6 +691,12 @@ class Layer(BaseNestedListItem):
         description="Adjustment type",
         update=update_node_tree
     )
+    use_hsv: BoolProperty(
+        name="HSV Adjust",
+        description="Apply Hue/Saturation/Value adjustment to this layer",
+        default=False,
+        update=update_node_tree
+    )
     empty_object: PointerProperty(
         name="Empty Object",
         type=Object,
@@ -1144,4 +1150,4 @@ class Layer(BaseNestedListItem):
     
     @property
     def modifies_color_data(self) -> bool:
-        return layer_modifies_color(self) or self.blend_mode != "MIX"
+        return layer_modifies_color(self) or self.blend_mode != "MIX" or self.use_hsv
