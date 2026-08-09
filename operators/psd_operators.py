@@ -274,7 +274,13 @@ class PAINTSYSTEM_OT_OpenPSDInPhotoshop(Operator):
     @classmethod
     def poll(cls, context):
         path = context.scene.get(KEY_PSD_PATH)
-        return bool(path) and os.path.isfile(bpy.path.abspath(path))
+        if not path:
+            cls.poll_message_set("먼저 Export 또는 Import로 PSD를 연동하세요")
+            return False
+        if not os.path.isfile(bpy.path.abspath(path)):
+            cls.poll_message_set(f"연동된 PSD 파일이 없습니다: {path}")
+            return False
+        return True
 
     def execute(self, context):
         import subprocess
