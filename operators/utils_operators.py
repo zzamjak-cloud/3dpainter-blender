@@ -16,7 +16,12 @@ from ..preferences import addon_package
 from ..utils.nodes import find_node, get_material_output
 from ..utils.version import is_newer_than
 from ..utils.unified_brushes import get_unified_settings
-from .brushes import get_brushes_from_library
+from .brushes import (
+    enable_unified_color,
+    get_brushes_from_library,
+    register_brush_auto_setup,
+    unregister_brush_auto_setup,
+)
 from .common import MultiMaterialOperator, PSContextMixin, DEFAULT_PS_UV_MAP_NAME, execute_operator_in_area, wait_for_redraw, redraw_panel
 from ..panels.common import is_editor_open
 
@@ -68,6 +73,8 @@ class PAINTSYSTEM_OT_AddPresetBrushes(Operator):
 
     def execute(self, context):
         get_brushes_from_library()
+        # 수동 임포트 시에는 통합 색상을 무조건 활성화 (전경색 브러시 간 공유)
+        enable_unified_color(context.scene)
         return {'FINISHED'}
 
 
@@ -516,4 +523,14 @@ class PAINTSYSTEM_OT_FocusPSNode(PSContextMixin, Operator):
 
 classes = collect_classes(sys.modules[__name__])
 
-register, unregister = register_classes_factory(classes)
+_register_classes, _unregister_classes = register_classes_factory(classes)
+
+
+def register():
+    _register_classes()
+    register_brush_auto_setup()
+
+
+def unregister():
+    unregister_brush_auto_setup()
+    _unregister_classes()
