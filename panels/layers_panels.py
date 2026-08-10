@@ -964,6 +964,8 @@ class MAT_MT_AddLayerMenu(Menu):
         # col.label(text="Advanced:")
         col.operator("paint_system.new_gradient_layer",
                 text="Fake Light", icon='LIGHT').gradient_type = 'FAKE_LIGHT'
+        col.operator("paint_system.new_fake_occlusion_layer",
+                     text="Fake Occlusion", icon='SHADING_RENDERED')
         col.operator("paint_system.new_attribute_layer",
                      text="Attribute Color", icon='MESH_DATA')
         col.operator("paint_system.new_random_color_layer",

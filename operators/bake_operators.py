@@ -7,8 +7,16 @@ from bpy.props import StringProperty, BoolProperty, IntProperty, EnumProperty
 
 from .common import PSContextMixin, PSImageCreateMixin, DEFAULT_PS_UV_MAP_NAME
 
-from ..paintsystem.data import Layer, set_layer_blend_type, get_layer_blend_type
+from ..paintsystem.data import (
+    Layer,
+    ensure_paint_system_uv_map,
+    get_layer_blend_type,
+    set_layer_blend_type,
+)
+from ..paintsystem.channel import ps_bake
 from ..paintsystem.context import parse_material
+from ..paintsystem.image import save_image
+from ..utils import get_next_unique_name
 from ..panels.common import get_icon_from_channel
 from ..utils.registration import collect_classes
 
@@ -875,6 +883,93 @@ class PAINTSYSTEM_OT_MergeUp(MergeLayerOperator):
     bl_description = "Merge the layer into the one above"
     bl_options = {'REGISTER', 'UNDO'}
     direction = 'UP'
+
+class PAINTSYSTEM_OT_NewFakeOcclusionLayer(BakeOperator):
+    """지오메트리에서 AO를 베이크해 Multiply 이미지 레이어로 추가한다"""
+    bl_idname = "paint_system.new_fake_occlusion_layer"
+    bl_label = "Fake Occlusion"
+    bl_description = "Bake ambient occlusion from the mesh into a new Multiply image layer"
+
+    ao_samples: IntProperty(
+        name="Samples",
+        description="AO bake sample count (higher = smoother)",
+        default=64,
+        min=1,
+        max=512,
+        options={'SKIP_SAVE'},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        ps_ctx = cls.parse_context(context)
+        return (
+            ps_ctx.ps_object is not None
+            and ps_ctx.ps_object.type == 'MESH'
+            and ps_ctx.active_channel is not None
+        )
+
+    def invoke(self, context, event):
+        self.update_bake_multiple_objects(context)
+        self.get_coord_type(context)
+        if self.use_paint_system_uv:
+            self.uv_map_name = DEFAULT_PS_UV_MAP_NAME
+        self.image_name = "Fake Occlusion"
+        if self.image_resolution != 'CUSTOM':
+            self.image_width = int(self.image_resolution)
+            self.image_height = int(self.image_resolution)
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        ps_ctx = self.parse_context(context)
+        self.image_create_ui(layout, context, show_name=False, show_float=False)
+        layout.prop(self, "ao_samples")
+        box = layout.box()
+        box.label(text="UV Map", icon='UV')
+        box.prop_search(self, "uv_map_name",
+                        ps_ctx.ps_object.data, "uv_layers", text="")
+        self.other_objects_ui(layout, context)
+        self.advanced_bake_settings_ui(layout, context)
+
+    def execute(self, context):
+        ps_ctx = self.parse_context(context)
+        channel = ps_ctx.active_channel
+        start_time = time.time()
+        # 베이크는 레이어 생성 전이므로 AUTO UV는 여기서 직접 보장한다
+        if self.uv_map_name not in ps_ctx.ps_object.data.uv_layers:
+            ensure_paint_system_uv_map(context)
+        context.window.cursor_set('WAIT')
+        try:
+            image = self.create_image(context)
+            image.colorspace_settings.name = 'sRGB'
+            ps_bake(
+                context, ps_ctx.ps_objects, ps_ctx.active_material,
+                self.uv_map_name, image,
+                use_gpu=self.use_gpu,
+                margin=self.margin,
+                margin_type=self.margin_type,
+                bake_type='AO',
+                samples=self.ao_samples,
+            )
+            save_image(image)
+        finally:
+            context.window.cursor_set('DEFAULT')
+        layer = channel.create_layer(
+            context,
+            layer_name=get_next_unique_name(
+                "Fake Occlusion", [l.name for l in channel.layers]),
+            layer_type="IMAGE",
+            insert_at="TOP",
+            image=image,
+            coord_type='UV',
+            uv_map_name=self.uv_map_name,
+        )
+        layer.blend_mode = "MULTIPLY"
+        self.report(
+            {'INFO'},
+            f"Fake occlusion baked in {round(time.time() - start_time, 2)}s")
+        return {'FINISHED'}
+
 
 classes = collect_classes(sys.modules[__name__])
 

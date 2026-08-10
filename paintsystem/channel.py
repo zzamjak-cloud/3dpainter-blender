@@ -62,7 +62,7 @@ def restore_cycles_settings(settings):
     scene.cycles.use_denoising = settings['use_denoising']
     scene.cycles.use_adaptive_sampling = settings['use_adaptive_sampling']
 
-def ps_bake(context, objects: list[Object], mat: Material, uv_layer, bake_image, use_gpu=True, use_clear=True, margin=8, margin_type='ADJACENT_FACES'):
+def ps_bake(context, objects: list[Object], mat: Material, uv_layer, bake_image, use_gpu=True, use_clear=True, margin=8, margin_type='ADJACENT_FACES', bake_type='EMIT', samples=1):
     from .data import ensure_udim_tiles
     bake_objects = []
     
@@ -83,7 +83,7 @@ def ps_bake(context, objects: list[Object], mat: Material, uv_layer, bake_image,
     image_node.image = bake_image
     with context.temp_override(active_object=bake_objects[0], selected_objects=bake_objects):
         bake_params = {
-            "type": 'EMIT',
+            "type": bake_type,
             "margin": margin,
             "margin_type": margin_type,
         }
@@ -92,7 +92,7 @@ def ps_bake(context, objects: list[Object], mat: Material, uv_layer, bake_image,
         context.scene.view_settings.view_transform = "Standard"
         cycles = context.scene.cycles
         cycles.device = 'GPU' if use_gpu else 'CPU'
-        cycles.samples = 1
+        cycles.samples = samples  # EMIT은 1이면 충분, AO 등 레이트레이스 패스는 수십 필요
         cycles.use_denoising = False
         cycles.use_adaptive_sampling = False
         for node in node_tree.nodes:
