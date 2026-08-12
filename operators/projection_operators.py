@@ -66,7 +66,15 @@ class PSProjectionTexItem(PropertyGroup):
     name: StringProperty(name="Name")
     filepath: StringProperty(subtype='FILE_PATH')
     image_name: StringProperty()
-    mtime: FloatProperty(default=0.0)
+    # FloatProperty(float32)는 유닉스 타임스탬프 정밀도를 못 담아
+    # 자동 리로드가 2초마다 오탐 → 썸네일 깜빡임. 문자열로 저장한다.
+    mtime: StringProperty(default="0")
+
+    def get_mtime(self) -> float:
+        try:
+            return float(self.mtime)
+        except ValueError:
+            return 0.0
 
     def get_image(self):
         return bpy.data.images.get(self.image_name)
@@ -185,7 +193,7 @@ class PAINTSYSTEM_OT_ProjectionImport(Operator):
             item.name = os.path.basename(path)
             item.filepath = path
             item.image_name = img.name
-            item.mtime = os.path.getmtime(path)
+            item.mtime = repr(os.path.getmtime(path))
             count += 1
         if count:
             scene.ps_projection_active_index = len(scene.ps_projection_textures) - 1
@@ -517,8 +525,8 @@ def _autoreload_timer():
             if not item.filepath or not os.path.isfile(item.filepath):
                 continue
             mtime = os.path.getmtime(item.filepath)
-            if mtime > item.mtime + 1e-4:
-                item.mtime = mtime
+            if mtime > item.get_mtime() + 1e-4:
+                item.mtime = repr(mtime)
                 img = item.get_image()
                 if img is not None:
                     img.reload()
