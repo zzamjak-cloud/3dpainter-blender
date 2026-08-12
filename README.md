@@ -3,13 +3,30 @@
 **포토샵처럼 쓰는 블렌더 손맵(핸드페인팅) 텍스처 페인팅 애드온.**
 [Paint System](https://github.com/natapol2547/paintsystem) (Tawan Sunflower, GPL-3.0-or-later)의 포크로, 레이어 기반 Diffuse 드로잉 워크플로에 필요한 기능을 추가·확장합니다. 라이선스는 원본과 동일하게 GPL-3.0-or-later를 유지합니다.
 
-## 설치
+## 설치 (자동 업데이트, 권장)
+
+한 번 등록하면 이후 새 릴리즈가 나올 때 블렌더가 자동으로 업데이트를 감지·설치합니다.
+
+1. 블렌더(**5.2 LTS 권장**) → Edit → Preferences → **Get Extensions** → 우측 상단 **▼ → Repositories** → **+ → Add Remote Repository**
+2. URL에 아래 주소 입력 후 **Check for Updates on Startup** 체크:
+   ```
+   https://github.com/zzamjak-cloud/3dpainter-blender/releases/latest/download/index.json
+   ```
+3. Get Extensions 목록에서 **3DPainter** 검색 → Install
+4. 기존에 Install from Disk로 설치한 버전이 있으면 먼저 제거 (중복 설치 방지)
+
+이후 업데이트는 블렌더 시작 시 알림이 뜨며, Get Extensions에서 **Update All** 한 번으로 반영됩니다.
+
+## 설치 (수동)
 
 1. [Releases](https://github.com/zzamjak-cloud/3dpainter-blender/releases)에서 플랫폼에 맞는 zip 다운로드 (`windows_x64` / `macos_arm64`, 압축 풀지 않음)
-2. 블렌더(**5.2 LTS 권장**) → Edit → Preferences → Add-ons → 우측 상단 **▼ → Install from Disk** → zip 선택
-3. **원본 Paint System 애드온은 비활성화** — 같은 내부 구조를 등록하므로 동시 활성화 시 충돌
-4. (Windows + 펜 타블렛) Preferences → Input → **Tablet API = Wintab** 으로 지정하면 Windows Ink를 꺼도 필압이 동작
-5. (macOS) 입력 소스가 한글이면 블렌더 단축키가 막히는 OS 이슈가 있음 — 블렌더 사용 시 영문(ABC) 입력 소스 권장 (Input Source Pro 등으로 앱별 자동 전환 가능)
+2. 블렌더 → Edit → Preferences → Add-ons → 우측 상단 **▼ → Install from Disk** → zip 선택
+
+## 공통 주의사항
+
+1. **원본 Paint System 애드온은 비활성화** — 같은 내부 구조를 등록하므로 동시 활성화 시 충돌
+2. (Windows + 펜 타블렛) Preferences → Input → **Tablet API = Wintab** 으로 지정하면 Windows Ink를 꺼도 필압이 동작
+3. (macOS) 입력 소스가 한글이면 블렌더 단축키가 막히는 OS 이슈가 있음 — 블렌더 사용 시 영문(ABC) 입력 소스 권장 (Input Source Pro 등으로 앱별 자동 전환 가능)
 
 PSD 연동용 psd-tools 휠이 동봉되어 있어 별도 파이썬 패키지 설치는 필요 없습니다.
 

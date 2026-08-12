@@ -13,14 +13,15 @@
    ```bash
    BLENDER=/Applications/Blender.app/Contents/MacOS/Blender ./scripts/build.sh --split-platforms
    ```
-   → `dist/painter3d-{버전}-macos_arm64.zip`, `dist/painter3d-{버전}-windows_x64.zip`
+   → `dist/painter3d-{버전}-macos_arm64.zip`, `dist/painter3d-{버전}-windows_x64.zip`, `dist/index.json`
 5. **GitHub Release 생성** (필수):
    ```bash
    gh release create v{버전} --repo zzamjak-cloud/3dpainter-blender \
      --title "3DPainter v{버전}" --notes "{한국어 변경 요약 + 설치 안내}" \
-     dist/painter3d-{버전}-macos_arm64.zip dist/painter3d-{버전}-windows_x64.zip
+     dist/painter3d-{버전}-macos_arm64.zip dist/painter3d-{버전}-windows_x64.zip dist/index.json
    ```
-   - 노트 형식은 v2.2.0/v2.3.0 릴리즈 참고: 변경 요약(추가 기능/수정) + 설치 안내(Blender 5.2 LTS 권장, Install from Disk, 원본 Paint System 애드온 비활성화)
+   - **`dist/index.json` 반드시 포함** — 자동 업데이트(원격 확장 저장소)가 `releases/latest/download/index.json`을 바라보므로, 누락하면 기존 사용자에게 업데이트가 배포되지 않음
+   - 노트 형식은 v2.2.0/v2.3.0 릴리즈 참고: 변경 요약(추가 기능/수정) + 설치 안내(Blender 5.2 LTS 권장, 자동 업데이트는 README의 원격 저장소 등록 참고, 원본 Paint System 애드온 비활성화)
 6. 빌드 zip에 신규 리소스(텍스처 등)가 포함됐는지 `unzip -l`로 확인
 
 주의: `main` 머지 후 릴리즈가 기본. 빌드 중 `Gouache ... not available. Keeping packed image` 경고는 무해함.

@@ -47,6 +47,16 @@ echo
   --output-dir "${OUTPUT_DIR}" \
   "$@"
 
+# 원격 저장소용 index.json 생성 — GitHub Release에 zip과 함께 올리면
+# Blender가 releases/latest/download/index.json 을 통해 자동 업데이트를 감지한다.
+# dist에는 과거 버전 zip이 섞여 있으므로 현재 버전만 스테이징해서 생성한다.
+VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "${PROJECT_ROOT}/blender_manifest.toml" | head -1)"
+STAGE_DIR="$(mktemp -d)"
+trap 'rm -rf "${STAGE_DIR}"' EXIT
+cp "${OUTPUT_DIR}"/painter3d-"${VERSION}"*.zip "${STAGE_DIR}/"
+"${BLENDER}" --command extension server-generate --repo-dir "${STAGE_DIR}"
+cp "${STAGE_DIR}/index.json" "${OUTPUT_DIR}/index.json"
+
 echo
 echo "Done. Package(s) written to ${OUTPUT_DIR}:"
-ls -1sh "${OUTPUT_DIR}"/*.zip 2>/dev/null || true
+ls -1sh "${OUTPUT_DIR}"/*.zip "${OUTPUT_DIR}/index.json" 2>/dev/null || true
