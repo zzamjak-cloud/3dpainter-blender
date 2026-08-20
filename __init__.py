@@ -17,11 +17,11 @@ from bpy.utils import register_submodule_factory
 from .custom_icons import load_icons, unload_icons
 
 bl_info = {
-    "name": "Paint System",
+    "name": "3DPainter",
     "author": "Tawan Sunflower, @blastframe",
     "description": "",
     "blender": (4, 2, 0),
-    "version": (2, 2, 0),
+    "version": (2, 3, 4),
     "location": "View3D > Sidebar > Paint System",
     "warning": "",
     "category": "Paint",
