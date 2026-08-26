@@ -105,17 +105,64 @@ def get_source_object(scene: bpy.types.Scene) -> bpy.types.Object | None:
 
 
 def _find_canvas_area(context, canvas_obj):
-    """캔버스 오브젝트가 로컬 뷰로 격리된 3D 뷰 영역을 찾는다."""
-    for area in context.screen.areas:
-        if area.type != 'VIEW_3D':
-            continue
-        space = area.spaces.active
-        try:
-            if space.local_view and canvas_obj.local_view_get(space):
-                return area, space
-        except (AttributeError, RuntimeError):
-            continue
+    """캔버스 오브젝트가 로컬 뷰로 격리된 3D 뷰 영역을 모든 창에서 찾는다.
+
+    현재 화면(screen)만 뒤지면 워크스페이스 전환·창 분리 상태에서 2D 뷰를
+    못 찾아 닫기가 재오픈으로 흘러가므로 반드시 전체 창을 검색한다.
+    """
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            space = area.spaces.active
+            try:
+                if space.local_view and canvas_obj.local_view_get(space):
+                    return window, area
+            except (AttributeError, RuntimeError):
+                continue
     return None, None
+
+
+def _cleanup_canvas_state(context, canvas):
+    """캔버스 오브젝트와 씬 키를 제거하고 원본을 페인트 모드로 복귀시킨다.
+
+    이 정리가 없으면 닫은 뒤에도 패널이 "열림"으로 판정되어 Close 버튼이
+    라벨 그대로 남고, 다시 누르면 재오픈되는 악순환에 빠진다.
+    """
+    scene = context.scene
+    src = get_source_object(scene)
+
+    # 캔버스가 활성인 채 제거되지 않도록 원본을 먼저 활성으로 복귀
+    if src is not None and src.name in context.view_layer.objects:
+        context.view_layer.objects.active = src
+        src.select_set(True)
+        if context.mode != 'PAINT_TEXTURE':
+            try:
+                bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+            except RuntimeError:
+                pass
+    elif context.view_layer.objects.active == canvas:
+        # 원본이 없으면 최소한 오브젝트 모드로 되돌려 안전하게 제거
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except RuntimeError:
+            pass
+
+    if canvas is not None:
+        mesh = canvas.data
+        try:
+            bpy.data.objects.remove(canvas)
+        except RuntimeError:
+            pass
+        else:
+            if mesh is not None and mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+    for key in (KEY_CANVAS, KEY_SOURCE):
+        try:
+            del scene[key]
+        except KeyError:
+            pass
 
 
 class PAINTSYSTEM_OT_Toggle2DView(Operator):
@@ -138,27 +185,34 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
         scene = context.scene
         canvas = get_canvas_object(scene)
 
-        # 이미 열려 있으면 닫기
+        # 이미 열려 있으면 닫기 — 영역을 닫기 전에 상태(캔버스·씬 키)를
+        # 먼저 정리한다. 2D 뷰 자체의 N패널에서 눌렀을 때 영역이 먼저
+        # 사라지면 이후 컨텍스트 조작이 위험하기 때문.
+        # 영역을 못 찾는 경우(워크스페이스 전환·수동 로컬 뷰 해제)에도
+        # 재오픈으로 흘리지 않고 상태만 정리하고 끝낸다.
         if canvas is not None:
-            area, _space = _find_canvas_area(context, canvas)
+            window, area = _find_canvas_area(context, canvas)
+            _cleanup_canvas_state(context, canvas)
             if area is not None:
-                with context.temp_override(area=area):
-                    bpy.ops.screen.area_close()
-                return {'FINISHED'}
+                try:
+                    with context.temp_override(window=window, area=area):
+                        bpy.ops.screen.area_close()
+                except RuntimeError:
+                    # 레이아웃 사정으로 영역을 못 닫아도 상태 정리는 끝났으니
+                    # 다음 클릭이 정상적인 "열기"로 동작한다
+                    self.report({'WARNING'}, "2D 뷰 영역을 닫지 못했습니다. 영역 경계에서 직접 닫아주세요")
+            return {'FINISHED'}
 
         src = context.active_object
-        if canvas is not None and src == canvas:
-            src = get_source_object(scene) or src
 
         if src.data.uv_layers.active is None:
             self.report({'ERROR'}, "활성 오브젝트에 UV맵이 없습니다")
             return {'CANCELLED'}
 
-        # 1. 캔버스 오브젝트 생성/재사용
-        if canvas is None:
-            mesh = bpy.data.meshes.new("PS 2D Canvas")
-            canvas = bpy.data.objects.new("PS 2D Canvas", mesh)
-            context.collection.objects.link(canvas)
+        # 1. 캔버스 오브젝트 생성 (닫을 때 제거되므로 항상 새로 만든다)
+        mesh = bpy.data.meshes.new("PS 2D Canvas")
+        canvas = bpy.data.objects.new("PS 2D Canvas", mesh)
+        context.collection.objects.link(canvas)
         _build_canvas_mesh(src, canvas.data)
         canvas.location = (CANVAS_OFFSET_X, 0.0, 0.0)
         canvas.hide_render = True
@@ -321,10 +375,11 @@ def _heal_canvas_now():
                 bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
             except RuntimeError:
                 pass
-    try:
-        del scene[KEY_CANVAS]
-    except KeyError:
-        pass
+    for key in (KEY_CANVAS, KEY_SOURCE):
+        try:
+            del scene[key]
+        except KeyError:
+            pass
     return None
 
 
