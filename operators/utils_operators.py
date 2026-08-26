@@ -171,7 +171,8 @@ class PAINTSYSTEM_OT_ColorSample(PSContextMixin, Operator):
 
     def execute(self, context):
         if is_newer_than(4,4):
-            bpy.ops.paint.sample_color('INVOKE_DEFAULT', merged=True, palette=False)
+            # merged=False: 음영이 반영된 화면 픽셀이 아니라 텍스처 원본 색을 샘플링
+            bpy.ops.paint.sample_color('INVOKE_DEFAULT', merged=False, palette=False)
             return {'FINISHED'}
 
         x, y = self.x, self.y

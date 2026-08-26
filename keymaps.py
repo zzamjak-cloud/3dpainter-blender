@@ -76,7 +76,9 @@ def register() -> None:
                     alt=_alt_flag,
                 )
 
-        # 3DPainter 포크: Alt+클릭 스포이드 (포토샵식 — 합성 결과에서 색 추출)
+        # 3DPainter 포크: Alt+클릭 스포이드 (포토샵식)
+        # merged=False → 화면(음영·그림자 포함) 대신 커서 아래 표면의
+        # 텍스처 원본 픽셀을 샘플링해 채색용 순수 컬러를 얻는다
         # 래퍼 오퍼레이터 안에서 모달을 중첩 호출하면 릴리스 이벤트를 놓쳐
         # 모달이 갇힐 수 있으므로 네이티브 오퍼레이터에 직접 바인딩한다
         if ENABLE_ALT_CLICK_EYEDROPPER:
@@ -87,7 +89,7 @@ def register() -> None:
                 idname='paint.sample_color',
                 key='LEFTMOUSE',
                 alt=True,
-                properties={'merged': True, 'palette': False},
+                properties={'merged': False, 'palette': False},
             )
 
         # 3DPainter 포크: 2D/3D 뷰 클릭 시 페인팅 대상 자동 전환 (이벤트 통과)
