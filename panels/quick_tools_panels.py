@@ -5,6 +5,7 @@ from bpy.types import Panel
 
 from .common import scale_content, PSContextMixin
 from bpy.utils import register_classes_factory
+from ..utils.nodes import find_node
 from ..utils.registration import collect_classes
 
 
@@ -44,6 +45,32 @@ class MAT_PT_PaintSystemQuickToolsDisplay(PSContextMixin, Panel):
                  text="", icon='FILE_REFRESH')
         row.prop(space, "show_gizmo_object_scale",
                  text="", icon='MOD_MESHDEFORM')
+
+        # 3DPainter 포크: 채색 중 입체감 파악용 와이어프레임 오버레이 + 농도 조절
+        overlay = space.overlay
+        box = layout.box()
+        row = box.row()
+        scale_content(context, row)
+        row.prop(overlay, "show_wireframes",
+                 text="Wireframe Overlay", icon='MOD_WIREFRAME')
+        row = box.row()
+        row.active = overlay.show_wireframes
+        row.prop(overlay, "wireframe_opacity", text="Opacity", slider=True)
+
+        # 3DPainter 포크: 라이팅/그림자 없이 전체 레이어 합성 결과만 보는 순수 컬러 뷰
+        # (기존 채널 격리 기능 — 채널 출력을 머티리얼 출력에 직결 + Standard 뷰 트랜스폼)
+        mat = ps_ctx.active_material
+        active_group = ps_ctx.active_group
+        if mat and active_group:
+            group_node = find_node(mat.node_tree, {
+                'bl_idname': 'ShaderNodeGroup', 'node_tree': active_group.node_tree})
+            if group_node:
+                row = box.row()
+                scale_content(context, row)
+                row.operator("paint_system.isolate_active_channel",
+                             text="Flat Color View",
+                             depress=ps_ctx.ps_mat_data.preview_channel,
+                             icon='SHADING_TEXTURE')
 
 
 class MAT_PT_PaintSystemQuickToolsMesh(PSContextMixin, Panel):

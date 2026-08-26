@@ -433,6 +433,16 @@ class MAT_PT_TexPaintRMBMenu(PSContextMixin, Panel, UnifiedPaintPanel):
                 slider=True,
             )
 
+        # 3DPainter 포크: 채색 중 입체감 파악용 와이어프레임 오버레이 농도 조절
+        if context.space_data and context.space_data.type == 'VIEW_3D':
+            overlay = context.space_data.overlay
+            wire_box = layout.box()
+            wire_row = wire_box.row(align=True)
+            wire_row.prop(overlay, "show_wireframes", text="", icon='MOD_WIREFRAME')
+            sub = wire_row.row(align=True)
+            sub.active = overlay.show_wireframes
+            sub.prop(overlay, "wireframe_opacity", text="Wireframe", slider=True)
+
 class NODE_PT_PaintSystemShaderEditor(PSContextMixin, Panel):
     """Paint System panel in Shader Editor for viewing layers"""
     bl_label = "Paint System"

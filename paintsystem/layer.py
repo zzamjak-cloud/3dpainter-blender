@@ -84,6 +84,15 @@ def update_active_image(self=None, context: bpy.types.Context = None):
     elif active_layer.coord_type == 'AUTO' and obj.data.uv_layers.get(DEFAULT_PS_UV_MAP_NAME):
         obj.data.uv_layers[DEFAULT_PS_UV_MAP_NAME].active = True
 
+    # 3DPainter 포크: Solid+Texture 셰이딩은 활성 캔버스 한 장만 표시해
+    # 다른 레이어가 안 보인 채 잘못 칠하게 되므로 레이어/채널 전환 시에도 보정한다.
+    # (순환 임포트 방지를 위한 지연 임포트)
+    try:
+        from ..operators.view2d_operators import ensure_composite_shading
+        ensure_composite_shading(context)
+    except Exception:
+        pass
+
 def update_active_layer(self, context):
     ps_ctx = parse_context(context)
     active_layer = ps_ctx.active_layer
