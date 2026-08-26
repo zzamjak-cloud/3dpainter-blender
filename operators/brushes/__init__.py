@@ -181,6 +181,22 @@ def enable_unified_color(scene) -> bool:
     return False
 
 
+def ensure_default_white_color(scene) -> None:
+    """전경색이 초기값(검정)이면 흰색으로 교정.
+    사용자가 고른 색은 건드리지 않도록 순수 검정(0,0,0)일 때만 바꾼다."""
+    try:
+        ts = scene.tool_settings
+        for holder in (getattr(ts, "image_paint", None), ts):
+            ups = getattr(holder, "unified_paint_settings", None) if holder else None
+            if ups is not None and tuple(ups.color) == (0.0, 0.0, 0.0):
+                ups.color = (1.0, 1.0, 1.0)
+        brush = getattr(getattr(ts, "image_paint", None), "brush", None)
+        if brush is not None and tuple(brush.color) == (0.0, 0.0, 0.0):
+            brush.color = (1.0, 1.0, 1.0)
+    except Exception:
+        pass
+
+
 @persistent
 def _load_post_ensure_brushes(_filepath=None):
     try:
@@ -194,6 +210,10 @@ def _load_post_ensure_brushes(_filepath=None):
             if not scene.get("ps_unified_color_init"):
                 if enable_unified_color(scene):
                     scene["ps_unified_color_init"] = True
+            # 전경색 최초 기본값이 검정으로 보이는 문제 → 파일당 1회 흰색으로 교정
+            if not scene.get("ps_default_white_init"):
+                ensure_default_white_color(scene)
+                scene["ps_default_white_init"] = True
         except Exception:
             pass
 
