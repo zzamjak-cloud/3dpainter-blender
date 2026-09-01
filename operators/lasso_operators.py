@@ -1023,7 +1023,7 @@ class PAINTSYSTEM_OT_CycleLassoTool(Operator):
 
 
 class PAINTSYSTEM_OT_SetBrushTool(Operator):
-    """B: 브러시 도구 선택"""
+    """B: 브러시 도구 선택 (지우개 블렌드 해제 포함)"""
     bl_idname = "paint_system.set_brush_tool"
     bl_label = "Select Brush Tool"
     bl_options = {'INTERNAL'}
@@ -1033,10 +1033,19 @@ class PAINTSYSTEM_OT_SetBrushTool(Operator):
         return context.mode == 'PAINT_TEXTURE'
 
     def execute(self, context):
+        # E(지우개)는 툴이 아니라 brush.blend를 ERASE_ALPHA로 바꾸는 토글이다.
+        # 툴만 브러시로 되돌리면 지우개 상태가 남아 채색이 안 되므로 여기서 함께 해제한다.
+        restored = False
+        image_paint = getattr(context.tool_settings, 'image_paint', None)
+        brush = getattr(image_paint, 'brush', None)
+        if brush is not None and brush.blend == 'ERASE_ALPHA':
+            brush.blend = 'MIX'
+            restored = True
+
         for name in ("builtin.brush", "builtin_brush.paint", "builtin_brush.Paint"):
             if _set_tool(name):
                 return {'FINISHED'}
-        return {'CANCELLED'}
+        return {'FINISHED'} if restored else {'CANCELLED'}
 
 
 class PS_ToolBoxSelect(bpy.types.WorkSpaceTool):
