@@ -138,10 +138,12 @@ class PSUVOptionsMixin:
         elif not self.use_paint_system_uv and self.coord_type == 'AUTO':
             self.coord_type = 'UV'
     
+    # 3DPainter 포크: 대부분 직접 UV 언랩을 끝낸 뒤 진행하므로,
+    # PS_UVMap을 자동 생성(smart_project)하는 AUTO 대신 기존 UV 맵 사용을 기본으로 둔다.
     use_paint_system_uv: BoolProperty(
         name="Use Paint System UV",
         description="Use the Paint System UV",
-        default=True,
+        default=False,
         update=update_use_paint_system_uv,
         options={'SKIP_SAVE'}
     )
@@ -197,6 +199,12 @@ class PSUVOptionsMixin:
         ps_ctx = PSContextMixin.parse_context(context)
         self.checked_coord_type = True
         self.uv_map_name = self.get_default_uv_map_name(context)
+        # 언랩된 UV 맵이 하나도 없는 메시는 선택할 UV가 없으므로 AUTO(PS_UVMap 자동 생성)로 되돌린다.
+        if not self.uv_map_name:
+            self.use_paint_system_uv = True
+            self.coord_type = 'AUTO'
+            self.uv_map_name = DEFAULT_PS_UV_MAP_NAME
+            return
         if ps_ctx.ps_settings.preferred_coord_type != 'UNDETECTED':
             if ps_ctx.ps_settings.preferred_coord_type == 'AUTO':
                 self.use_paint_system_uv = True
