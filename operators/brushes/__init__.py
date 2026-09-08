@@ -7,6 +7,9 @@ import bpy
 
 BRUSH_PREFIX = "PS_"
 
+# 사용자가 수동 임포트한 브러시 표시 키 (자동 정리 예외 처리용)
+MANUAL_IMPORT_KEY = "ps_manual_import"
+
 def _resolve_library_path(filename: str = "brushes.blend") -> Path:
     """
     Resolve the absolute path to the given library filename.
@@ -18,6 +21,12 @@ def _resolve_library_path(filename: str = "brushes.blend") -> Path:
 
 
 def get_brushes_from_library():
+    """브러시 라이브러리를 현재 파일로 임포트한다.
+
+    사용자가 패널의 "Import Paint System Brushes"를 눌렀을 때만 호출한다.
+    자동(파일 로드/애드온 활성화) 호출은 하지 않는다 — 에셋 라이브러리에
+    PS_ 브러시가 계속 되살아나는 문제 때문.
+    """
     # Load the library file
     filepath = _resolve_library_path()
     if not filepath.exists():
@@ -36,9 +45,11 @@ def get_brushes_from_library():
     _remove_legacy_art_brushes()
 
     # For blender 4.3
-    if bpy.app.version >= (4, 3, 0):
-        for brush in bpy.data.brushes:
-            if brush.name.startswith(BRUSH_PREFIX):
+    # 사용자가 직접 임포트한 브러시임을 표시해 두어, 자동 정리 대상에서 제외한다.
+    for brush in bpy.data.brushes:
+        if brush.name.startswith(BRUSH_PREFIX):
+            brush[MANUAL_IMPORT_KEY] = True
+            if bpy.app.version >= (4, 3, 0):
                 brush.asset_mark()
 
 
@@ -59,7 +70,28 @@ def _remove_legacy_art_brushes():
                 pass
 
 
-# ---- 자동 준비: 파일을 열 때마다 브러시를 갖추고 전경색을 브러시 간 공유 ----
+def _remove_auto_imported_brushes():
+    """예전 버전이 파일을 열 때마다 자동 임포트·에셋 등록하던 PS_ 브러시를 정리한다.
+
+    사용자가 패널에서 직접 임포트한 브러시(``MANUAL_IMPORT_KEY`` 표시)는 남긴다.
+    """
+    for brush in list(bpy.data.brushes):
+        if not brush.name.startswith(BRUSH_PREFIX):
+            continue
+        if brush.get(MANUAL_IMPORT_KEY):
+            continue
+        try:
+            if getattr(brush, "asset_data", None) is not None:
+                brush.asset_clear()
+        except Exception:
+            pass
+        try:
+            bpy.data.brushes.remove(brush)
+        except Exception:
+            pass
+
+
+# ---- 자동 준비: 파일을 열 때마다 잔재 브러시를 정리하고 전경색을 브러시 간 공유 ----
 
 from bpy.app.handlers import persistent  # noqa: E402
 
@@ -93,8 +125,10 @@ def ensure_default_white_color(scene) -> None:
 
 @persistent
 def _load_post_ensure_brushes(_filepath=None):
+    # 브러시 자동 임포트는 하지 않는다. 예전 버전이 남긴 잔재만 정리한다.
     try:
-        get_brushes_from_library()
+        _remove_legacy_art_brushes()
+        _remove_auto_imported_brushes()
     except Exception:
         pass
     # 브러시마다 색이 따로 놀지 않도록 통합 색상 활성화
