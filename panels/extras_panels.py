@@ -109,7 +109,9 @@ def draw_brush_settings(layout: UILayout, context: Context):
         layout.operator("paint_system.add_preset_brushes",
                         text="Add Preset Brushes", icon="IMPORT")
     
-    header, panel = col.panel("advanced_brush_settings_panel", default_closed=True)
+    # 아래 블록에서 col 이 재바인딩되므로 서브패널 부모를 미리 잡아 둔다
+    settings_col = col
+    header, panel = settings_col.panel("advanced_brush_settings_panel", default_closed=True)
     header.label(text="Advanced Settings")
     if panel:
         image_paint = context.tool_settings.image_paint
@@ -121,6 +123,30 @@ def draw_brush_settings(layout: UILayout, context: Context):
         col.use_property_split = True
         col.use_property_decorate = False
         col.prop(image_paint, "normal_angle", text="Angle")
+
+    # --- 정밀도 (포토샵 감각 맞추기) ---
+    header, panel = settings_col.panel("brush_precision_panel", default_closed=True)
+    header.label(text="Precision")
+    if panel:
+        active_brush = settings.brush
+        if active_brush:
+            col = panel.column(align=True)
+            col.prop(active_brush, "use_pressure_size", text="Pressure → Size")
+            col.prop(active_brush, "use_pressure_strength", text="Pressure → Opacity")
+            col = panel.column(align=True)
+            col.use_property_split = True
+            col.use_property_decorate = False
+            col.prop(active_brush, "input_samples", text="Input Samples")
+            col.prop(active_brush, "spacing", text="Spacing")
+            col.prop(active_brush, "hardness", text="Hardness")
+        panel.operator("paint_system.setup_brush_precision",
+                       text="Photoshop Defaults", icon='BRUSH_DATA')
+        from ..preferences import get_preferences
+        prefs = get_preferences(context)
+        panel.separator()
+        panel.prop(prefs, "texture_interpolation", text="Filtering")
+        panel.operator("paint_system.apply_texture_interpolation",
+                       text="Apply to All Image Layers", icon='FILE_REFRESH')
 
 class MAT_PT_Brush(PSContextMixin, Panel, UnifiedPaintPanel):
     # 현재 UI에서 쓰지 않아 등록 대상에서 제외한다

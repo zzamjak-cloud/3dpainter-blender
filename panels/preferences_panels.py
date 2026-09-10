@@ -2,7 +2,7 @@ import sys
 
 import bpy
 from bpy.types import AddonPreferences
-from bpy.props import BoolProperty, FloatProperty, EnumProperty
+from bpy.props import BoolProperty, FloatProperty, EnumProperty, IntProperty
 from bpy.utils import register_classes_factory
 
 from .common import find_keymap
@@ -115,6 +115,38 @@ class PaintSystemPreferences(AddonPreferences):
         default=True
     )
 
+    # --- 페인팅 정밀도 (포토샵 감각 맞추기) ---
+    texture_interpolation: EnumProperty(
+        name="Texture Filtering",
+        description="이미지 레이어를 3D 뷰에 표시할 때 쓰는 텍셀 보간 방식",
+        items=(
+            ('Linear', "Linear (Smooth)",
+             "텍셀 사이를 보간해 포토샵처럼 부드러운 가장자리를 얻는다"),
+            ('Closest', "Closest (Pixel)",
+             "보간 없이 텍셀을 그대로 표시한다 — 픽셀 아트용"),
+        ),
+        default='Linear',
+    )
+    use_brush_precision: BoolProperty(
+        name="Photoshop-style Brush Dynamics",
+        description=(
+            "브러시를 처음 쓸 때 필압(크기·불투명도)과 입력 샘플을 포토샵에 가깝게 "
+            "1회 초기화한다. 이후 사용자가 바꾼 값은 건드리지 않는다"),
+        default=True
+    )
+    brush_input_samples: IntProperty(
+        name="Input Samples",
+        description=(
+            "태블릿 입력을 몇 개씩 평균낼지 — 값이 클수록 획이 매끄럽지만 "
+            "커서 반응이 조금 늦어진다"),
+        default=4, min=1, max=32
+    )
+    brush_spacing: IntProperty(
+        name="Brush Spacing",
+        description="스탬프 간격(지름 대비 %). 낮을수록 획이 촘촘해 각지지 않는다",
+        default=5, min=1, max=100
+    )
+
     def draw_shortcut(self, layout, kmi, text):
         row = layout.row(align=True)
         row.prop(kmi, "active", text="", emboss=False)
@@ -161,6 +193,21 @@ class PaintSystemPreferences(AddonPreferences):
         rmb_box.prop(self, "show_hsv_sliders_rmb", text="Show HSV sliders in RMB popover")
         # rmb_box.prop(self, "show_active_palette_rmb", text="Show Active Palette in RMB popover")
         rmb_box.prop(self, "show_brush_settings_rmb", text="Show Brush Controls in RMB popover")
+
+        # --- 페인팅 정밀도 ---
+        prec_box = layout.box()
+        prec_box.label(text="Painting Precision", icon='BRUSH_DATA')
+        prec_box.prop(self, "texture_interpolation")
+        prec_box.operator("paint_system.apply_texture_interpolation",
+                          text="Apply Filtering to All Image Layers", icon='FILE_REFRESH')
+        prec_box.separator()
+        prec_box.prop(self, "use_brush_precision")
+        col = prec_box.column(align=True)
+        col.enabled = self.use_brush_precision
+        col.prop(self, "brush_input_samples")
+        col.prop(self, "brush_spacing")
+        prec_box.operator("paint_system.setup_brush_precision",
+                          text="Apply to Current Brush", icon='BRUSH_DATA')
 
         box = layout.box()
         box.label(text="Paint System Shortcuts:")

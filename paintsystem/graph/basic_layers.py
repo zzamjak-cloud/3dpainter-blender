@@ -384,13 +384,33 @@ def parse_socket_name(layer: "Layer", socket_name: str, default_socket_name: str
         return socket_name if socket_name != "_NONE_" else None
     return default_socket_name
 
+IMAGE_INTERPOLATIONS = {"Linear", "Closest", "Cubic", "Smart"}
+
+
+def default_image_interpolation() -> str:
+    """이미지 레이어를 3D 뷰에 표시할 때 쓸 텍셀 보간 방식.
+
+    기본은 Linear — Closest 는 텍셀 경계가 그대로 드러나 브러시 획이 계단처럼
+    보인다(포토샵에서 100% 확대했을 때와 다른 인상의 주된 원인).
+    픽셀 아트처럼 텍셀을 또렷하게 보고 싶으면 프리퍼런스에서 Closest 로 바꾼다.
+    """
+    try:
+        from ...preferences import get_preferences
+        value = get_preferences(bpy.context).texture_interpolation
+    except Exception:
+        return "Linear"
+    return value if value in IMAGE_INTERPOLATIONS else "Linear"
+
+
 def create_image_graph(layer: "Layer"):
     img = layer.image
     # Create builder with mixing graph - alpha will be determined later
     color_socket = parse_socket_name(layer, layer.color_output_name, "Color")
     alpha_socket = parse_socket_name(layer, layer.alpha_output_name, "Alpha")
     builder = PSNodeTreeBuilder(layer, LAYER_TYPES["IMAGE"].version, "source", color_socket, "source", alpha_socket)
-    builder.add_node("source", "ShaderNodeTexImage", {"image.force": img, "interpolation": "Closest", "name": "source"})
+    # interpolation 은 force 하지 않는다 — 노드 생성 시에만 적용되므로
+    # 사용자가 레이어별로 바꾼 값은 재컴파일 후에도 유지된다
+    builder.add_node("source", "ShaderNodeTexImage", {"image.force": img, "interpolation": default_image_interpolation(), "name": "source"})
     builder.create_coord_graph("source", "Vector")
     return builder
 

@@ -15,6 +15,7 @@ submodules = [
     # 3DPainter 포크 추가 모듈
     "line_operators",
     "eyedropper_operators",
+    "precision_operators",
     "view2d_operators",
     "lasso_operators",
     "psd_operators",

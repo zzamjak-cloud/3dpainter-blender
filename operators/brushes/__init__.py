@@ -123,6 +123,69 @@ def ensure_default_white_color(scene) -> None:
         pass
 
 
+# ---- 포토샵식 브러시 정밀도 ----
+
+# 브러시 데이터블록에 남기는 "정밀도 기본값을 이미 적용했다" 표시.
+# 값을 올리면 기존 파일의 브러시에도 새 기본값이 한 번 더 적용된다.
+BRUSH_PRECISION_KEY = "ps_precision_version"
+BRUSH_PRECISION_VERSION = 1
+
+
+def _precision_prefs():
+    from ...preferences import get_preferences
+    return get_preferences(bpy.context)
+
+
+def apply_brush_precision(brush, prefs=None) -> bool:
+    """브러시 하나에 포토샵식 필압·정밀도 기본값을 적용한다.
+
+    블렌더 기본 브러시(Paint Hard)는 ``use_pressure_size`` 와
+    ``use_pressure_strength`` 가 **둘 다 꺼져 있어** 태블릿 필압이 아예 반영되지
+    않는다. 포토샵 기본 브러시는 크기·불투명도 모두 필압을 따르므로 그에 맞추고,
+    입력 샘플과 스탬프 간격도 획이 각지지 않는 값으로 낮춘다.
+    """
+    if brush is None or not getattr(brush, "use_paint_image", False):
+        return False
+    if prefs is None:
+        prefs = _precision_prefs()
+    values = (
+        ("use_pressure_size", True),
+        ("use_pressure_strength", True),
+        ("input_samples", int(prefs.brush_input_samples)),
+        ("spacing", int(prefs.brush_spacing)),
+    )
+    changed = False
+    for attr, value in values:
+        try:
+            if getattr(brush, attr) != value:
+                setattr(brush, attr, value)
+                changed = True
+        except (AttributeError, TypeError):
+            pass
+    brush[BRUSH_PRECISION_KEY] = BRUSH_PRECISION_VERSION
+    return changed
+
+
+def ensure_brush_precision(*_args) -> None:
+    """활성 이미지 페인트 브러시에 정밀도 기본값을 **브러시당 1회** 적용한다.
+
+    데이터블록에 표시를 남기므로, 이후 사용자가 필압을 끄거나 간격을 바꿔도
+    다시 덮어쓰지 않는다. 5.x 의 브러시는 필요할 때 에셋에서 새로 로드되므로
+    파일 단위가 아니라 브러시 단위로 걸어야 한다.
+    """
+    try:
+        prefs = _precision_prefs()
+        if not prefs.use_brush_precision:
+            return
+        paint = getattr(bpy.context.tool_settings, "image_paint", None)
+        brush = getattr(paint, "brush", None) if paint else None
+        if brush is None or brush.get(BRUSH_PRECISION_KEY) == BRUSH_PRECISION_VERSION:
+            return
+        apply_brush_precision(brush, prefs)
+    except Exception:
+        pass
+
+
 @persistent
 def _load_post_ensure_brushes(_filepath=None):
     # 브러시 자동 임포트는 하지 않는다. 예전 버전이 남긴 잔재만 정리한다.
@@ -144,6 +207,7 @@ def _load_post_ensure_brushes(_filepath=None):
                 scene["ps_default_white_init"] = True
         except Exception:
             pass
+    ensure_brush_precision()
 
 
 def _startup_ensure_brushes():
@@ -151,14 +215,25 @@ def _startup_ensure_brushes():
     return None
 
 
+_precision_owner = object()
+
+
 def register_brush_auto_setup():
     if _load_post_ensure_brushes not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_load_post_ensure_brushes)
+    # 브러시를 바꾸면 새 데이터블록이 로드될 수 있으므로 전환 시점마다 확인한다
+    bpy.msgbus.subscribe_rna(
+        key=(bpy.types.Paint, "brush"),
+        owner=_precision_owner,
+        args=(),
+        notify=ensure_brush_precision,
+    )
     # 애드온 활성화 직후 현재 세션에도 즉시 반영 (등록 컨텍스트 제한 회피)
     bpy.app.timers.register(_startup_ensure_brushes, first_interval=0.2)
 
 
 def unregister_brush_auto_setup():
+    bpy.msgbus.clear_by_owner(_precision_owner)
     if _load_post_ensure_brushes in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_load_post_ensure_brushes)
 
@@ -166,6 +241,8 @@ def unregister_brush_auto_setup():
 __all__ = [
     "get_brushes_from_library",
     "enable_unified_color",
+    "apply_brush_precision",
+    "ensure_brush_precision",
     "register_brush_auto_setup",
     "unregister_brush_auto_setup",
 ]

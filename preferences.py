@@ -22,6 +22,10 @@ class PaintSystemPreferences:
     show_opacity_in_layer_list: bool = True
     use_panel_quick_access: bool = False
     developer_mode: bool = False
+    texture_interpolation: str = 'Linear'
+    use_brush_precision: bool = True
+    brush_input_samples: int = 4
+    brush_spacing: int = 5
 
 def get_preferences(context) -> PaintSystemPreferences:
     """Get the Paint System preferences"""
