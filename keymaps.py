@@ -77,19 +77,19 @@ def register() -> None:
                 )
 
         # 3DPainter 포크: Alt+클릭 스포이드 (포토샵식)
-        # merged=False → 화면(음영·그림자 포함) 대신 커서 아래 표면의
-        # 텍스처 원본 픽셀을 샘플링해 채색용 순수 컬러를 얻는다
-        # 래퍼 오퍼레이터 안에서 모달을 중첩 호출하면 릴리스 이벤트를 놓쳐
-        # 모달이 갇힐 수 있으므로 네이티브 오퍼레이터에 직접 바인딩한다
+        # 네이티브 paint.sample_color 는 merged=False 일 때 활성 레이어 이미지
+        # 한 장만 보므로, 그 레이어가 비어 있으면 투명 픽셀의 RGB 인 검은색이
+        # 집힌다. paint_system.color_sample 은 레이어 스택 전체를 합성해
+        # 음영 없는 색을 구하고, 아무것도 없을 때만 화면 픽셀로 폴백한다.
+        # (네이티브는 EXEC 로만 호출해 모달 중첩으로 커서가 갇히는 문제를 피한다)
         if ENABLE_ALT_CLICK_EYEDROPPER:
             _add_keymap_entry(
                 kc,
                 name=km_name,
                 space_type=space,
-                idname='paint.sample_color',
+                idname='paint_system.color_sample',
                 key='LEFTMOUSE',
                 alt=True,
-                properties={'merged': False, 'palette': False},
             )
 
         # 3DPainter 포크: 2D/3D 뷰 클릭 시 페인팅 대상 자동 전환 (이벤트 통과)

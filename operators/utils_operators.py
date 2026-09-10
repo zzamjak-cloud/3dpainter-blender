@@ -2,7 +2,6 @@ import sys
 
 import addon_utils
 import bpy
-import gpu
 from bpy.props import EnumProperty, IntProperty
 from bpy.types import Operator
 from bpy.utils import register_classes_factory
@@ -14,8 +13,6 @@ from ..utils.registration import collect_classes
 # ---
 from ..preferences import addon_package
 from ..utils.nodes import find_node, get_material_output
-from ..utils.version import is_newer_than
-from ..utils.unified_brushes import get_unified_settings
 from .brushes import (
     enable_unified_color,
     get_brushes_from_library,
@@ -155,46 +152,6 @@ class PAINTSYSTEM_OT_ToggleBrushEraseAlpha(Operator):
                 else:
                     brush.blend = 'ERASE_ALPHA'  # Switch to Erase Alpha mode
         return {'FINISHED'}
-
-
-class PAINTSYSTEM_OT_ColorSample(PSContextMixin, Operator):
-    """Sample the color under the mouse cursor"""
-    bl_idname = "paint_system.color_sample"
-    bl_label = "Color Sample"
-
-    x: IntProperty()
-    y: IntProperty()
-    
-    @classmethod
-    def poll(cls, context):
-        return context.mode == 'PAINT_TEXTURE'
-
-    def execute(self, context):
-        if is_newer_than(4,4):
-            # merged=False: 음영이 반영된 화면 픽셀이 아니라 텍스처 원본 색을 샘플링
-            bpy.ops.paint.sample_color('INVOKE_DEFAULT', merged=False, palette=False)
-            return {'FINISHED'}
-
-        x, y = self.x, self.y
-        buffer = gpu.state.active_framebuffer_get()
-        pixel = buffer.read_color(x, y, 1, 1, 3, 0, 'FLOAT')
-        pixel.dimensions = 1 * 1 * 3
-        pix_value = [float(item) for item in pixel]
-
-        tool_settings = UnifiedPaintPanel.paint_settings(context)
-        brush_settings = tool_settings.brush
-        unified_settings = get_unified_settings(context, "use_unified_color")
-
-        brush_settings = tool_settings.brush
-        unified_settings.color = pix_value
-        brush_settings.color = pix_value
-        context.scene.ps_scene_data.update_hsv_color(context)
-        return {'FINISHED'}
-
-    def invoke(self, context, event):
-        self.x = event.mouse_x
-        self.y = event.mouse_y
-        return self.execute(context)
 
 
 class PAINTSYSTEM_OT_OpenPaintSystemPreferences(Operator):
