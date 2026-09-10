@@ -11,7 +11,7 @@ import sys
 import numpy as np
 
 import bpy
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import Operator
 
 from .common import PSContextMixin
@@ -119,6 +119,31 @@ def _psd_layer_canvas_pixels(psd, layer) -> np.ndarray:
     return canvas
 
 
+def _layer_has_content(image) -> bool:
+    """이미지에 실제로 칠해진 픽셀(알파 > 0)이 있는지.
+
+    메모리 때문에 배열을 캐시하지 않고 알파만 확인하고 버린다 — 내보내기는
+    자주 하는 작업이 아니라, 레이어를 두 번 읽는 비용보다 8K 텍스처 여러 장을
+    동시에 들고 있는 쪽이 위험하다.
+    """
+    try:
+        return bool(np.any(read_rgba(image)[..., 3] > 0.0))
+    except (RuntimeError, ValueError):
+        return True
+
+
+def _export_canvas_size(layers) -> tuple[int, int]:
+    """내보낼 PSD 문서 크기. **내용이 있는 레이어**만으로 정한다.
+
+    그룹 생성 시 딸려오는 빈 2048 레이어가 max 를 끌어올려, 1024 텍스처를
+    가져왔는데도 문서가 2048 로 나가던 문제를 막는다.
+    """
+    sized = [l for l in layers if _layer_has_content(l.image)] or list(layers)
+    width = max(int(l.image.size[0]) for l in sized)
+    height = max(int(l.image.size[1]) for l in sized)
+    return width, height
+
+
 def _set_layer_opacity(layer, value: float) -> None:
     try:
         layer.pre_mix_node.inputs['Opacity'].default_value = value
@@ -135,6 +160,20 @@ class PAINTSYSTEM_OT_ExportPSD(PSContextMixin, Operator):
     filepath: StringProperty(subtype='FILE_PATH')
     filter_glob: StringProperty(default='*.psd', options={'HIDDEN'})
 
+    canvas_size: EnumProperty(
+        name="Canvas Size",
+        description="PSD 문서 크기를 정하는 방식",
+        items=[
+            ('AUTO', "Auto", "내용이 있는 레이어 중 가장 큰 크기를 사용"),
+            ('CUSTOM', "Custom", "크기를 직접 지정"),
+        ],
+        default='AUTO',
+    )
+    canvas_width: IntProperty(
+        name="Width", default=1024, min=1, subtype='PIXEL')
+    canvas_height: IntProperty(
+        name="Height", default=1024, min=1, subtype='PIXEL')
+
     @classmethod
     def poll(cls, context):
         ps_ctx = cls.parse_context(context)
@@ -143,8 +182,20 @@ class PAINTSYSTEM_OT_ExportPSD(PSContextMixin, Operator):
     def invoke(self, context, event):
         if not self.filepath:
             self.filepath = context.scene.get(KEY_PSD_PATH, "untitled.psd")
+        # Custom 필드 초기값은 픽셀을 읽지 않고 정할 수 있는 최대 레이어 크기로
+        layers = _image_layers_top_down(self.parse_context(context).active_channel)
+        if layers:
+            self.canvas_width = max(int(l.image.size[0]) for l in layers)
+            self.canvas_height = max(int(l.image.size[1]) for l in layers)
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "canvas_size")
+        if self.canvas_size == 'CUSTOM':
+            col.prop(self, "canvas_width")
+            col.prop(self, "canvas_height")
 
     def execute(self, context):
         err = _require_psd_tools()
@@ -161,8 +212,10 @@ class PAINTSYSTEM_OT_ExportPSD(PSContextMixin, Operator):
             self.report({'ERROR'}, "내보낼 이미지 레이어가 없습니다")
             return {'CANCELLED'}
 
-        w = max(int(l.image.size[0]) for l in layers)
-        h = max(int(l.image.size[1]) for l in layers)
+        if self.canvas_size == 'CUSTOM':
+            w, h = int(self.canvas_width), int(self.canvas_height)
+        else:
+            w, h = _export_canvas_size(layers)
         psd = PSDImage.new(mode='RGBA', size=(w, h))
 
         # PSD 내부 리스트는 아래→위 순서: 스택의 맨 아래 레이어부터 append
@@ -182,7 +235,7 @@ class PAINTSYSTEM_OT_ExportPSD(PSContextMixin, Operator):
         psd.save(path)
         context.scene[KEY_PSD_PATH] = path
         _sync_state["mtime"] = os.path.getmtime(path)
-        self.report({'INFO'}, f"PSD 내보내기 완료: {os.path.basename(path)}")
+        self.report({'INFO'}, f"PSD 내보내기 완료: {os.path.basename(path)} ({w}x{h})")
         return {'FINISHED'}
 
 
@@ -230,14 +283,76 @@ def _import_psd_into_channel(context, channel, path, create_missing=True) -> int
     return count
 
 
+def _import_image_into_channel(context, channel, path, create_missing=True) -> int:
+    """일반 이미지 파일(PNG 등)을 채널의 이미지 레이어로 가져온다.
+
+    PSD 임포트와 똑같이 **내부 이미지에 픽셀을 복사**한다. 파일을 그대로 링크하면
+    레이어 이미지가 디스크 파일에 묶여, 페인팅이 원본을 건드리고 스포이드·병합처럼
+    픽셀을 직접 읽는 경로가 PSD 레이어와 다르게 동작한다.
+
+    반환: 반영한 레이어 수 (0 또는 1).
+    """
+    src = bpy.data.images.load(path, check_existing=False)
+    try:
+        width, height = int(src.size[0]), int(src.size[1])
+        if width <= 0 or height <= 0 or not src.has_data:
+            raise RuntimeError("이미지 픽셀을 읽을 수 없습니다")
+        pixels = read_rgba(src)
+        is_float = bool(src.is_float)
+        colorspace = src.colorspace_settings.name
+        alpha_mode = src.alpha_mode
+    finally:
+        bpy.data.images.remove(src)
+
+    name = os.path.splitext(os.path.basename(path))[0]
+    # PSD 임포트와 같은 규칙: 이름이 같은 이미지 레이어가 있으면 픽셀만 갱신한다
+    target = next(
+        (l for l in _image_layers_top_down(channel) if l.layer_name == name), None)
+    if target is not None:
+        img = target.image
+        if int(img.size[0]) != width or int(img.size[1]) != height:
+            img.scale(width, height)
+        write_rgba(img, pixels)
+        return 1
+    if not create_missing:
+        return 0
+
+    img = bpy.data.images.new(
+        name, width=width, height=height, alpha=True, float_buffer=is_float)
+    # 원본과 픽셀 해석(색공간·알파)을 맞춰야 복사한 버퍼가 같은 색으로 보인다
+    try:
+        img.colorspace_settings.name = colorspace
+    except (TypeError, RuntimeError):
+        pass
+    try:
+        img.alpha_mode = alpha_mode
+    except (TypeError, RuntimeError):
+        pass
+    write_rgba(img, pixels)
+    coord_type, uv_map_name = channel_coord_settings(context, channel)
+    channel.create_layer(
+        context, layer_name=name, layer_type='IMAGE', image=img,
+        insert_at='TOP', update_active_index=True,
+        coord_type=coord_type, uv_map_name=uv_map_name)
+    return 1
+
+
+# PSD 외에 레이어로 가져올 수 있는 이미지 확장자 (블렌더가 읽을 수 있는 것들)
+_IMAGE_EXTENSIONS = (
+    '.png', '.jpg', '.jpeg', '.tga', '.tif', '.tiff',
+    '.bmp', '.exr', '.hdr', '.webp',
+)
+_IMPORT_FILTER_GLOB = ';'.join(['*.psd', *(f'*{ext}' for ext in _IMAGE_EXTENSIONS)])
+
+
 class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
-    """PSD 파일을 활성 채널의 레이어 스택으로 가져온다"""
+    """PSD 또는 이미지 파일(PNG 등)을 활성 채널의 레이어로 가져온다"""
     bl_idname = "paint_system.import_psd"
-    bl_label = "Import PSD"
+    bl_label = "Import PSD / Image"
     bl_options = {'REGISTER', 'UNDO'}
 
     filepath: StringProperty(subtype='FILE_PATH')
-    filter_glob: StringProperty(default='*.psd', options={'HIDDEN'})
+    filter_glob: StringProperty(default=_IMPORT_FILTER_GLOB, options={'HIDDEN'})
 
     @classmethod
     def poll(cls, context):
@@ -249,16 +364,32 @@ class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        err = _require_psd_tools()
-        if err:
-            self.report({'ERROR'}, err)
-            return {'CANCELLED'}
         path = bpy.path.abspath(self.filepath)
         if not os.path.isfile(path):
             self.report({'ERROR'}, "파일을 찾을 수 없습니다")
             return {'CANCELLED'}
+        ext = os.path.splitext(path)[1].lower()
         ps_ctx = self.parse_context(context)
+
+        if ext != '.psd':
+            if ext not in _IMAGE_EXTENSIONS:
+                self.report({'ERROR'}, f"지원하지 않는 파일 형식입니다: {ext or '(없음)'}")
+                return {'CANCELLED'}
+            try:
+                count = _import_image_into_channel(
+                    context, ps_ctx.active_channel, path)
+            except RuntimeError as exc:
+                self.report({'ERROR'}, f"이미지를 가져오지 못했습니다: {exc}")
+                return {'CANCELLED'}
+            self.report({'INFO'}, f"이미지 가져오기 완료: 레이어 {count}개")
+            return {'FINISHED'}
+
+        err = _require_psd_tools()
+        if err:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
         count = _import_psd_into_channel(context, ps_ctx.active_channel, path)
+        # 라이브 동기화는 PSD 전용이므로 PSD 를 가져왔을 때만 경로를 기억한다
         context.scene[KEY_PSD_PATH] = path
         _sync_state["mtime"] = os.path.getmtime(path)
         self.report({'INFO'}, f"PSD 가져오기 완료: 레이어 {count}개")

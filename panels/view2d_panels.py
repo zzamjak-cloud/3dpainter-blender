@@ -56,7 +56,7 @@ class MAT_PT_PaintSystem2DView(Panel):
         from ..operators.psd_operators import KEY_PSD_PATH, is_sync_running
         box = layout.box()
         col = box.column(align=True)
-        col.label(text="Photoshop (PSD)", icon='FILE_IMAGE')
+        col.label(text="Photoshop (PSD) / Image", icon='FILE_IMAGE')
         row = col.row(align=True)
         row.operator("paint_system.export_psd", text="Export")
         row.operator("paint_system.import_psd", text="Import")
