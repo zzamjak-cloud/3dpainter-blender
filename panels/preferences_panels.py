@@ -217,6 +217,12 @@ class PaintSystemPreferences(AddonPreferences):
         kmi = find_keymap('paint_system.toggle_brush_erase_alpha')
         if kmi:
             self.draw_shortcut(box, kmi, "Toggle Eraser")
+        kmi = find_keymap('paint_system.toggle_pressure_strength')
+        if kmi:
+            self.draw_shortcut(box, kmi, "Toggle Strength Pressure")
+        kmi = find_keymap('paint_system.toggle_pressure_size')
+        if kmi:
+            self.draw_shortcut(box, kmi, "Toggle Size Pressure")
 
 classes = collect_classes(sys.modules[__name__])
 

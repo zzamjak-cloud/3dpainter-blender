@@ -71,6 +71,53 @@ class PAINTSYSTEM_OT_SetupBrushPrecision(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
+class PAINTSYSTEM_OT_TogglePressureStrength(PSContextMixin, Operator):
+    """필압이 브러시 불투명도에 반영되는지 토글한다 (P)"""
+    bl_idname = "paint_system.toggle_pressure_strength"
+    bl_label = "Toggle Strength Pressure"
+    # 단순 토글이라 undo 스텝을 만들지 않는다 — 페인팅 중 undo 스택을 오염시키지 않게
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        paint = getattr(context.tool_settings, "image_paint", None)
+        return getattr(paint, "brush", None) is not None
+
+    def execute(self, context):
+        brush = context.tool_settings.image_paint.brush
+        brush.use_pressure_strength = not brush.use_pressure_strength
+        state = "ON" if brush.use_pressure_strength else "OFF"
+        self.report({'INFO'}, f"필압 → 불투명도: {state}")
+        # 헤더/사이드바가 즉시 갱신되도록 리드로우 요청
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
+class PAINTSYSTEM_OT_TogglePressureSize(PSContextMixin, Operator):
+    """필압이 브러시 크기에 반영되는지 토글한다 (Shift+P)"""
+    bl_idname = "paint_system.toggle_pressure_size"
+    bl_label = "Toggle Size Pressure"
+    # 강도 토글과 같은 이유로 undo 스텝을 만들지 않는다
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        paint = getattr(context.tool_settings, "image_paint", None)
+        return getattr(paint, "brush", None) is not None
+
+    def execute(self, context):
+        brush = context.tool_settings.image_paint.brush
+        brush.use_pressure_size = not brush.use_pressure_size
+        state = "ON" if brush.use_pressure_size else "OFF"
+        self.report({'INFO'}, f"필압 → 크기: {state}")
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
 classes = collect_classes(sys.modules[__name__])
 
 register, unregister = bpy.utils.register_classes_factory(classes)

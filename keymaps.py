@@ -222,6 +222,16 @@ def register() -> None:
             kc, name=km_name, space_type=space,
             idname='paint_system.set_brush_tool', key='B')
 
+        # 3DPainter 포크: P = 필압 → 불투명도, Shift+P = 필압 → 크기 토글
+        # (P/Shift+P 모두 블렌더 기본 Image Paint 키맵에서 비어 있다. 참고로
+        #  Shift+S는 블렌더 기본으로 use_smooth_stroke 토글에 잡혀 있다)
+        _add_keymap_entry(
+            kc, name=km_name, space_type=space,
+            idname='paint_system.toggle_pressure_strength', key='P')
+        _add_keymap_entry(
+            kc, name=km_name, space_type=space,
+            idname='paint_system.toggle_pressure_size', key='P', shift=True)
+
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(
             kc,

@@ -70,6 +70,12 @@ class MAT_PT_BrushTooltips(Panel):
         self.draw_shortcut(col, kmi, "Toggle Erase Alpha")
         kmi = find_keymap("paint_system.color_sample")
         self.draw_shortcut(col, kmi, "Eyedropper")
+        kmi = find_keymap("paint_system.toggle_pressure_strength")
+        if kmi:
+            self.draw_shortcut(col, kmi, "Toggle Strength Pressure")
+        kmi = find_keymap("paint_system.toggle_pressure_size")
+        if kmi:
+            self.draw_shortcut(col, kmi, "Toggle Size Pressure")
         # kmi = find_keymap("object.transfer_mode")
         # self.draw_shortcut(col, kmi, "Switch Object")
         kmi = find_keymap_by_name("Radial Control")
@@ -131,8 +137,8 @@ def draw_brush_settings(layout: UILayout, context: Context):
         active_brush = settings.brush
         if active_brush:
             col = panel.column(align=True)
-            col.prop(active_brush, "use_pressure_size", text="Pressure → Size")
-            col.prop(active_brush, "use_pressure_strength", text="Pressure → Opacity")
+            col.prop(active_brush, "use_pressure_size", text="Pressure → Size (Shift+P)")
+            col.prop(active_brush, "use_pressure_strength", text="Pressure → Opacity (P)")
             col = panel.column(align=True)
             col.use_property_split = True
             col.use_property_decorate = False
