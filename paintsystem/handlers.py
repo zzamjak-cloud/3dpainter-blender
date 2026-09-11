@@ -160,6 +160,8 @@ def load_paint_system_data():
 @bpy.app.handlers.persistent
 def load_post(scene):
     # 이전 파일의 Material 포인터가 캐시에 남아 있으면 죽은 RNA를 참조하게 된다
+    from .pixel_undo import clear as clear_pixel_undo
+    clear_pixel_undo()
     _invalidate_material_layer_cache()
     invalidate_action_layer_cache()
     invalidate_layer_uid_channel_index()
@@ -175,6 +177,9 @@ def undo_redo_post(scene):
     _invalidate_material_layer_cache()
     invalidate_action_layer_cache()
     invalidate_layer_uid_channel_index()
+    # memfile undo 는 이미지 픽셀을 담지 않으므로 직접 맞춰 준다
+    from .pixel_undo import sync_to_scene_token
+    sync_to_scene_token()
 
 
 @bpy.app.handlers.persistent

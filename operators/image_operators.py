@@ -12,6 +12,7 @@ from .common import (
     blender_image_to_numpy
 )
 from ..paintsystem.image import set_image_pixels, ImageTiles, write_rgba
+from ..paintsystem.pixel_undo import pixel_undo_group
 from .image_filters import list_brush_presets, resolve_brush_preset_path
 from ..paintsystem.graph.common import DEFAULT_PS_UV_MAP_NAME
 from ..utils.registration import collect_classes
@@ -92,7 +93,9 @@ class PAINTSYSTEM_OT_ResizeImage(PSImageFilterMixin, Operator):
         image = self.get_image(context)
         if not image:
             return {'CANCELLED'}
-        image.scale(self.width, self.height)
+        # 리사이즈는 픽셀을 파괴하는데 memfile undo 는 버퍼를 담지 않는다
+        with pixel_undo_group([image]):
+            image.scale(self.width, self.height)
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -128,7 +131,8 @@ class PAINTSYSTEM_OT_ClearImage(PSImageFilterMixin, Operator):
         if not image:
             return {'CANCELLED'}
         w, h = int(image.size[0]), int(image.size[1])
-        write_rgba(image, numpy.zeros((h, w, 4), dtype=numpy.float32))
+        with pixel_undo_group([image]):
+            write_rgba(image, numpy.zeros((h, w, 4), dtype=numpy.float32))
         return {'FINISHED'}
     
 class PAINTSYSTEM_OT_FillImage(PSImageFilterMixin, Operator):
@@ -149,7 +153,8 @@ class PAINTSYSTEM_OT_FillImage(PSImageFilterMixin, Operator):
         fill[:, :, 1] = self.color[1]
         fill[:, :, 2] = self.color[2]
         fill[:, :, 3] = self.color[3]
-        write_rgba(image, fill)
+        with pixel_undo_group([image]):
+            write_rgba(image, fill)
         return {'FINISHED'}
     
     def invoke(self, context, event):

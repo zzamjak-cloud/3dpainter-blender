@@ -16,6 +16,7 @@ from bpy.types import Operator
 
 from .common import PSContextMixin
 from ..paintsystem.image import read_rgba, write_rgba
+from ..paintsystem.pixel_undo import pixel_undo_group
 from ..utils.registration import collect_classes
 
 # Paint System(MixRGB 계열) ↔ PSD 블렌드 모드 매핑
@@ -263,9 +264,11 @@ def _import_psd_into_channel(context, channel, path, create_missing=True) -> int
         ps_layer = matches.pop(0) if matches else None
         if ps_layer is not None:
             img = ps_layer.image
-            if int(img.size[0]) != w or int(img.size[1]) != h:
-                img.scale(w, h)
-            _uint8_to_image(img, arr)
+            # 기존 레이어를 덮어쓰므로 되돌릴 수 있게 픽셀을 스냅샷해 둔다
+            with pixel_undo_group([img]):
+                if int(img.size[0]) != w or int(img.size[1]) != h:
+                    img.scale(w, h)
+                _uint8_to_image(img, arr)
         elif create_missing:
             img = bpy.data.images.new(psd_layer.name, width=w, height=h, alpha=True)
             _uint8_to_image(img, arr)
@@ -310,9 +313,11 @@ def _import_image_into_channel(context, channel, path, create_missing=True) -> i
         (l for l in _image_layers_top_down(channel) if l.layer_name == name), None)
     if target is not None:
         img = target.image
-        if int(img.size[0]) != width or int(img.size[1]) != height:
-            img.scale(width, height)
-        write_rgba(img, pixels)
+        # 기존 레이어를 덮어쓰므로 되돌릴 수 있게 픽셀을 스냅샷해 둔다
+        with pixel_undo_group([img]):
+            if int(img.size[0]) != width or int(img.size[1]) != height:
+                img.scale(width, height)
+            write_rgba(img, pixels)
         return 1
     if not create_missing:
         return 0
