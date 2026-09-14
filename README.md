@@ -64,6 +64,8 @@ N패널 → Paint System → **2D View → Open 2D View**: 뷰포트가 분할�
 ### Photoshop (PSD) 왕복
 2D View 패널의 **Photoshop (PSD)** 섹션:
 - **Export / Import** — 레이어 스택 ↔ PSD (이름·순서·블렌드 모드·불투명도·표시 상태 보존, 픽셀 레이어만)
+  - Import 모드(파일 브라우저 사이드바): **Replace**(기본, 채널 레이어를 PSD 스택으로 통째로 교체) / **Merge**(이름이 같은 레이어는 픽셀 갱신, 없는 레이어는 위에 추가). PNG 등 단일 이미지는 항상 레이어로 추가
+  - Merge/Live Sync 로 기존 레이어를 덮어쓰면 레이어마다 undo 스텝이 하나씩 남는다 (Ctrl+Z 한 번 = 레이어 한 장 되돌리기)
 - **Open PS** — 연동된 PSD를 포토샵에서 즉시 열기
 - **Live Sync** — 포토샵에서 저장하면 2초 내 자동 반영 (이름이 같은 레이어의 픽셀 갱신)
 

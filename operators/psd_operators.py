@@ -16,7 +16,7 @@ from bpy.types import Operator
 
 from .common import PSContextMixin
 from ..paintsystem.image import read_rgba, write_rgba
-from ..paintsystem.pixel_undo import pixel_undo_group
+from ..paintsystem.pixel_undo import pixel_undo_group, push_undo_step
 from ..utils.registration import collect_classes
 
 # Paint System(MixRGB 계열) ↔ PSD 블렌드 모드 매핑
@@ -240,21 +240,42 @@ class PAINTSYSTEM_OT_ExportPSD(PSContextMixin, Operator):
         return {'FINISHED'}
 
 
-def _import_psd_into_channel(context, channel, path, create_missing=True) -> int:
+def _clear_channel_layers(context, channel) -> int:
+    """채널의 레이어를 전부 지운다 (폴더는 자식까지). 반환: 지운 최상위 항목 수.
+
+    이미지 데이터블록은 지우지 않고 고아로 남긴다 — memfile undo 가 되살릴 때
+    픽셀 캐시가 그대로 있어야 하고, 저장·재로드 시 블렌더가 알아서 정리한다.
+    """
+    roots = [l for l in channel.flattened_unlinked_layers if int(l.parent_id) == -1]
+    if roots:
+        channel.delete_layers(context, roots)
+    return len(roots)
+
+
+def _import_psd_into_channel(context, channel, path, create_missing=True,
+                             replace=False) -> tuple[int, int]:
     """PSD 픽셀 레이어를 채널에 반영한다. 이름이 같으면 픽셀 갱신, 없으면 생성.
 
-    반환: 반영한 레이어 수.
+    ``replace=True`` 면 기존 레이어를 모두 지운 뒤 PSD 스택으로 통째로 교체한다.
+    레이어 생성·활성 변경(ID 변경)을 모두 끝낸 뒤 기존 이미지 덮어쓰기를 하는 순서다 —
+    덮어쓰기가 남기는 IMAGE undo 스텝의 memfile 스냅샷에 ID 변경이 함께 담기게 한다.
+    반환: (반영한 레이어 수, 남긴 IMAGE undo 스텝 수). 스텝이 0 이면 호출자가
+    :func:`push_undo_step` 으로 스텝을 남겨야 한다.
     """
     from psd_tools import PSDImage
 
     psd = PSDImage.open(path)
     w, h = psd.size
+    if replace:
+        _clear_channel_layers(context, channel)
     # 이름 중복을 허용하기 위해 이름→레이어 목록으로 매칭하고, 매칭 시 소비한다
     existing: dict[str, list] = {}
     for l in _image_layers_top_down(channel):
         existing.setdefault(l.layer_name, []).append(l)
 
     count = 0
+    last_layer = None
+    overwrites: list[tuple] = []   # (레이어, 이미지, 픽셀) — 마지막에 한꺼번에 쓴다
     # list(psd)는 아래→위 순서 — 아래부터 처리하며 새 레이어는 스택 위에 쌓는다
     for psd_layer in list(psd):
         if psd_layer.is_group() or psd_layer.kind != 'pixel':
@@ -263,15 +284,11 @@ def _import_psd_into_channel(context, channel, path, create_missing=True) -> int
         matches = existing.get(psd_layer.name)
         ps_layer = matches.pop(0) if matches else None
         if ps_layer is not None:
-            img = ps_layer.image
-            # 기존 레이어를 덮어쓰므로 되돌릴 수 있게 픽셀을 스냅샷해 둔다
-            with pixel_undo_group([img]):
-                if int(img.size[0]) != w or int(img.size[1]) != h:
-                    img.scale(w, h)
-                _uint8_to_image(img, arr)
+            overwrites.append((ps_layer, ps_layer.image, arr))
         elif create_missing:
             img = bpy.data.images.new(psd_layer.name, width=w, height=h, alpha=True)
-            _uint8_to_image(img, arr)
+            with pixel_undo_group([], created=[img]):
+                _uint8_to_image(img, arr)
             coord_type, uv_map_name = channel_coord_settings(context, channel)
             ps_layer = channel.create_layer(
                 context, layer_name=psd_layer.name, layer_type='IMAGE',
@@ -282,8 +299,21 @@ def _import_psd_into_channel(context, channel, path, create_missing=True) -> int
         ps_layer.enabled = bool(psd_layer.visible)
         ps_layer.blend_mode = _psd_to_ps_blend(psd_layer.blend_mode)
         _set_layer_opacity(ps_layer, psd_layer.opacity / 255.0)
+        last_layer = ps_layer
         count += 1
-    return count
+    if replace and last_layer is not None:
+        # 교체 직후엔 이전 active_index 가 무의미하므로 맨 위 레이어를 활성으로
+        channel.set_active_index_to_layer(context, last_layer)
+
+    steps = 0
+    for _layer, img, arr in overwrites:
+        # 기존 레이어를 덮어쓰므로 IMAGE 스텝+스냅샷을 남긴다 (이미지마다 스텝 하나)
+        with pixel_undo_group([img]) as group:
+            if int(img.size[0]) != w or int(img.size[1]) != h:
+                img.scale(w, h)
+            _uint8_to_image(img, arr)
+        steps += group.registered
+    return count, steps
 
 
 def _import_image_into_channel(context, channel, path, create_missing=True) -> int:
@@ -293,7 +323,7 @@ def _import_image_into_channel(context, channel, path, create_missing=True) -> i
     레이어 이미지가 디스크 파일에 묶여, 페인팅이 원본을 건드리고 스포이드·병합처럼
     픽셀을 직접 읽는 경로가 PSD 레이어와 다르게 동작한다.
 
-    반환: 반영한 레이어 수 (0 또는 1).
+    반환: (반영한 레이어 수 0 또는 1, 남긴 IMAGE undo 스텝 수).
     """
     src = bpy.data.images.load(path, check_existing=False)
     try:
@@ -313,14 +343,14 @@ def _import_image_into_channel(context, channel, path, create_missing=True) -> i
         (l for l in _image_layers_top_down(channel) if l.layer_name == name), None)
     if target is not None:
         img = target.image
-        # 기존 레이어를 덮어쓰므로 되돌릴 수 있게 픽셀을 스냅샷해 둔다
-        with pixel_undo_group([img]):
+        # 기존 레이어를 덮어쓰므로 IMAGE 스텝+스냅샷을 남긴다
+        with pixel_undo_group([img]) as group:
             if int(img.size[0]) != width or int(img.size[1]) != height:
                 img.scale(width, height)
             write_rgba(img, pixels)
-        return 1
+        return 1, group.registered
     if not create_missing:
-        return 0
+        return 0, 0
 
     img = bpy.data.images.new(
         name, width=width, height=height, alpha=True, float_buffer=is_float)
@@ -333,13 +363,14 @@ def _import_image_into_channel(context, channel, path, create_missing=True) -> i
         img.alpha_mode = alpha_mode
     except (TypeError, RuntimeError):
         pass
-    write_rgba(img, pixels)
+    with pixel_undo_group([], created=[img]):
+        write_rgba(img, pixels)
     coord_type, uv_map_name = channel_coord_settings(context, channel)
     channel.create_layer(
         context, layer_name=name, layer_type='IMAGE', image=img,
         insert_at='TOP', update_active_index=True,
         coord_type=coord_type, uv_map_name=uv_map_name)
-    return 1
+    return 1, 0
 
 
 # PSD 외에 레이어로 가져올 수 있는 이미지 확장자 (블렌더가 읽을 수 있는 것들)
@@ -354,10 +385,24 @@ class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
     """PSD 또는 이미지 파일(PNG 등)을 활성 채널의 레이어로 가져온다"""
     bl_idname = "paint_system.import_psd"
     bl_label = "Import PSD / Image"
-    bl_options = {'REGISTER', 'UNDO'}
+    # undo 단위: 기존 이미지를 덮어썼으면 pixel_undo_group 의 IMAGE 스텝, 새 레이어만
+    # 만들었으면 push_undo_step 의 memfile 스텝 — 'UNDO' 는 헛도는 스텝을 더 만든다
+    bl_options = {'REGISTER'}
 
     filepath: StringProperty(subtype='FILE_PATH')
     filter_glob: StringProperty(default=_IMPORT_FILTER_GLOB, options={'HIDDEN'})
+
+    import_mode: EnumProperty(
+        name="Import Mode",
+        description="PSD 레이어를 기존 채널에 반영하는 방식",
+        items=[
+            ('REPLACE', "Replace",
+             "채널의 기존 레이어를 모두 지우고 PSD 레이어 스택으로 통째로 교체"),
+            ('MERGE', "Merge",
+             "이름이 같은 레이어는 픽셀만 갱신하고 없는 레이어는 위에 추가"),
+        ],
+        default='REPLACE',
+    )
 
     @classmethod
     def poll(cls, context):
@@ -367,6 +412,12 @@ class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.label(text="PSD")
+        col.prop(self, "import_mode", expand=True)
+        col.label(text="PNG 등 단일 이미지는 항상 레이어로 추가됩니다", icon='INFO')
 
     def execute(self, context):
         path = bpy.path.abspath(self.filepath)
@@ -381,11 +432,13 @@ class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
                 self.report({'ERROR'}, f"지원하지 않는 파일 형식입니다: {ext or '(없음)'}")
                 return {'CANCELLED'}
             try:
-                count = _import_image_into_channel(
+                count, steps = _import_image_into_channel(
                     context, ps_ctx.active_channel, path)
             except RuntimeError as exc:
                 self.report({'ERROR'}, f"이미지를 가져오지 못했습니다: {exc}")
                 return {'CANCELLED'}
+            if steps == 0:
+                push_undo_step("Import Image")
             self.report({'INFO'}, f"이미지 가져오기 완료: 레이어 {count}개")
             return {'FINISHED'}
 
@@ -393,11 +446,17 @@ class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
         if err:
             self.report({'ERROR'}, err)
             return {'CANCELLED'}
-        count = _import_psd_into_channel(context, ps_ctx.active_channel, path)
         # 라이브 동기화는 PSD 전용이므로 PSD 를 가져왔을 때만 경로를 기억한다
+        # (undo 스텝에 함께 담기도록 픽셀 쓰기보다 먼저 기록)
         context.scene[KEY_PSD_PATH] = path
         _sync_state["mtime"] = os.path.getmtime(path)
-        self.report({'INFO'}, f"PSD 가져오기 완료: 레이어 {count}개")
+        count, steps = _import_psd_into_channel(
+            context, ps_ctx.active_channel, path,
+            replace=(self.import_mode == 'REPLACE'))
+        if steps == 0:
+            push_undo_step("Import PSD")
+        how = "교체" if self.import_mode == 'REPLACE' else "병합"
+        self.report({'INFO'}, f"PSD 가져오기 완료({how}): 레이어 {count}개")
         return {'FINISHED'}
 
 
@@ -455,6 +514,7 @@ def _sync_timer():
             ps_ctx = _mix.parse_context(bpy.context)
             if ps_ctx.active_channel is not None:
                 # 타이머 컨텍스트에서는 레이어 생성 없이 픽셀만 갱신 (안전)
+                # 덮어쓴 이미지마다 IMAGE undo 스텝이 남는다
                 _import_psd_into_channel(
                     bpy.context, ps_ctx.active_channel, path, create_missing=False)
     except Exception:
