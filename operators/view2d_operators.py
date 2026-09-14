@@ -10,11 +10,13 @@ import sys
 
 import bpy
 from bpy.types import Operator
+from mathutils import Vector
 
 from ..utils.registration import collect_classes
 
-# 캔버스 오브젝트를 원점에서 밀어내 메인 뷰에서 모델과 겹치지 않게 한다
-CANVAS_OFFSET_X = 2.0
+# 캔버스 오브젝트를 원본 바운딩 박스 바깥으로 밀어내 메인 뷰에서 모델과
+# 겹치지 않게 한다 (고정 오프셋은 모델이 크면 모델 안에 파묻혔다)
+CANVAS_MARGIN = 1.0
 
 # 씬 커스텀 프로퍼티 키 (파일 저장 후에도 유지)
 KEY_CANVAS = "ps_2d_canvas_obj"
@@ -78,6 +80,36 @@ def _build_canvas_mesh(src_obj: bpy.types.Object, mesh: bpy.types.Mesh) -> None:
         poly.material_index = mi
 
     mesh.update()
+
+
+def _canvas_location(src_obj: bpy.types.Object, mesh: bpy.types.Mesh):
+    """캔버스를 원본의 월드 바운딩 박스 +X 바깥에 놓을 위치.
+
+    캔버스 지오메트리는 UV 범위(보통 0~1)를 그대로 쓰므로 캔버스 자신의
+    로컬 min 도 빼서 왼쪽 가장자리가 정확히 여백 지점에 오게 한다.
+    """
+    try:
+        corners = [src_obj.matrix_world @ Vector(c) for c in src_obj.bound_box]
+        max_x = max(c.x for c in corners)
+        min_y = min(c.y for c in corners)
+    except (AttributeError, TypeError, ValueError):
+        max_x, min_y = 1.0, 0.0
+    canvas_min_x = min((v.co.x for v in mesh.vertices), default=0.0)
+    canvas_min_y = min((v.co.y for v in mesh.vertices), default=0.0)
+    return (max_x + CANVAS_MARGIN - canvas_min_x, min_y - canvas_min_y, 0.0)
+
+
+def _isolate_canvas_in_local_view(context, space, canvas) -> None:
+    """로컬 뷰에 캔버스만 남긴다 — 다른 오브젝트가 함께 들어오면 캔버스와
+    겹쳐 보여 2D 뷰에서 칠할 수 없게 된다."""
+    for obj in context.view_layer.objects:
+        if obj == canvas:
+            continue
+        try:
+            if obj.local_view_get(space):
+                obj.local_view_set(space, False)
+        except (AttributeError, RuntimeError):
+            continue
 
 
 def ensure_composite_shading(context) -> None:
@@ -214,7 +246,7 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
         canvas = bpy.data.objects.new("PS 2D Canvas", mesh)
         context.collection.objects.link(canvas)
         _build_canvas_mesh(src, canvas.data)
-        canvas.location = (CANVAS_OFFSET_X, 0.0, 0.0)
+        canvas.location = _canvas_location(src, canvas.data)
         canvas.hide_render = True
         canvas.hide_select = False  # 로컬 뷰 진입을 위해 잠시 선택 가능
         scene[KEY_CANVAS] = canvas.name
@@ -249,6 +281,21 @@ class PAINTSYSTEM_OT_Toggle2DView(Operator):
         canvas.select_set(True)
         with context.temp_override(area=new_area, region=region):
             bpy.ops.view3d.localview(frame_selected=True)
+        try:
+            in_local = bool(space.local_view) and canvas.local_view_get(space)
+        except (AttributeError, RuntimeError):
+            in_local = False
+        if not in_local:
+            # 격리에 실패하면 2D 뷰가 씬 전체를 보여 모델과 겹친다 — 되돌리고 알린다
+            _cleanup_canvas_state(context, canvas)
+            try:
+                with context.temp_override(area=new_area):
+                    bpy.ops.screen.area_close()
+            except RuntimeError:
+                pass
+            self.report({'ERROR'}, "2D 뷰 로컬 뷰 격리에 실패했습니다")
+            return {'CANCELLED'}
+        _isolate_canvas_in_local_view(context, space, canvas)
 
         # 5. 상단 정사영 고정 + 오버레이 정리
         r3d = space.region_3d
