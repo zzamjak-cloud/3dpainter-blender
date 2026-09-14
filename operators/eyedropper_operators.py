@@ -41,6 +41,45 @@ logger = get_logger(__name__)
 _OPAQUE_EPS = 0.999
 # 이 값보다 알파가 낮으면 "아무것도 칠해지지 않았다"고 본다
 _TRANSPARENT_EPS = 1e-4
+# 숨긴 페이스를 뚫고 다시 쏠 때의 시작점 오프셋과 최대 재시도 횟수
+_RAY_SKIP_EPS = 1e-4
+_RAY_MAX_HOPS = 64
+
+
+def _hidden_faces_mask(mesh):
+    """페이스 숨김 플래그 배열. 숨긴 페이스가 없으면 None.
+
+    5.x 에서는 ``MeshPolygon.hide`` 가 없고 ``.hide_poly`` 불 속성만 남았다.
+    """
+    attr = mesh.attributes.get('.hide_poly')
+    if attr is None or attr.domain != 'FACE' or attr.data_type != 'BOOLEAN':
+        return None
+    try:
+        import numpy as np
+        mask = np.empty(len(attr.data), dtype=bool)
+        attr.data.foreach_get('value', mask)
+    except (RuntimeError, ValueError, AttributeError):
+        return None
+    return mask if mask.any() else None
+
+
+def _ray_cast_visible(obj_eval, mesh, origin, direction):
+    """숨긴 페이스(``.hide_poly``)는 건너뛰고 보이는 페이스를 맞힌다.
+
+    ``Object.ray_cast`` 는 숨김 상태를 모르므로, 숨긴 페이스에 맞으면 그 지점
+    바로 뒤에서 다시 쏜다 — 디테일 작업용으로 앞면을 숨겼을 때 스포이드가
+    숨긴 면의 색을 집어 오는 문제를 막는다.
+    """
+    hidden = _hidden_faces_mask(mesh)
+    origin = Vector(origin)
+    for _ in range(_RAY_MAX_HOPS):
+        hit, location, normal, face_index = obj_eval.ray_cast(origin, direction)
+        if not hit:
+            return False, None, None, -1
+        if hidden is None or face_index < 0 or face_index >= len(hidden) or not hidden[face_index]:
+            return hit, location, normal, face_index
+        origin = location + direction * _RAY_SKIP_EPS
+    return False, None, None, -1
 
 
 def _srgb_to_linear(value: float) -> float:
@@ -170,7 +209,8 @@ def uv_under_cursor(context, region, coord):
     local_origin = matrix_inv @ origin
     local_dir = (matrix_inv.to_3x3() @ direction).normalized()
 
-    hit, location, _normal, face_index = obj_eval.ray_cast(local_origin, local_dir)
+    hit, location, _normal, face_index = _ray_cast_visible(
+        obj_eval, mesh, local_origin, local_dir)
     if not hit or face_index < 0 or face_index >= len(mesh.polygons):
         return None
 
