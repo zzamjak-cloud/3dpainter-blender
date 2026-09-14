@@ -59,7 +59,7 @@ class PAINTSYSTEM_OT_InvertColors(PSImageFilterMixin, Operator):
 class PAINTSYSTEM_OT_ResizeImage(PSImageFilterMixin, Operator):
     bl_idname = "paint_system.resize_image"
     bl_label = "Resize Image"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER'}  # undo 기록은 image.resize 의 네이티브 이미지 스텝이 담당
     bl_description = "Resize the active image"
 
     def update_width_height(self, context):
@@ -93,8 +93,12 @@ class PAINTSYSTEM_OT_ResizeImage(PSImageFilterMixin, Operator):
         image = self.get_image(context)
         if not image:
             return {'CANCELLED'}
-        # 리사이즈는 픽셀을 파괴하는데 memfile undo 는 버퍼를 담지 않는다
-        with pixel_undo_group([image]):
+        # 네이티브 image.resize 는 전/후 픽셀을 이미지 undo 스텝에 담는다
+        # (memfile undo 는 버퍼를 담지 않아 image.scale 만 쓰면 되돌릴 수 없다)
+        try:
+            with context.temp_override(edit_image=image):
+                bpy.ops.image.resize(size=(self.width, self.height))
+        except RuntimeError:
             image.scale(self.width, self.height)
         return {'FINISHED'}
 
@@ -123,7 +127,7 @@ class PAINTSYSTEM_OT_ResizeImage(PSImageFilterMixin, Operator):
 class PAINTSYSTEM_OT_ClearImage(PSImageFilterMixin, Operator):
     bl_idname = "paint_system.clear_image"
     bl_label = "Clear Image"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER'}  # undo 단위는 pixel_undo_group 의 IMAGE 스텝
     bl_description = "Clear the active image"
 
     def execute(self, context):
@@ -138,7 +142,7 @@ class PAINTSYSTEM_OT_ClearImage(PSImageFilterMixin, Operator):
 class PAINTSYSTEM_OT_FillImage(PSImageFilterMixin, Operator):
     bl_idname = "paint_system.fill_image"
     bl_label = "Fill Image"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER'}  # undo 단위는 pixel_undo_group 의 IMAGE 스텝
     bl_description = "Fill the active image with current color"
     
     color: FloatVectorProperty(name="Color", default=(1.0, 1.0, 1.0, 1.0), size=4, min=0.0, max=1.0, subtype='COLOR')

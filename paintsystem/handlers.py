@@ -180,6 +180,13 @@ def undo_redo_post(scene):
     # memfile undo 는 이미지 픽셀을 담지 않으므로 직접 맞춰 준다
     from .pixel_undo import sync_to_scene_token
     sync_to_scene_token()
+    # 되돌아온 레이어 상태에 페인트 캔버스를 다시 맞춘다 — 레이어가 교체·삭제된
+    # 스텝을 오가면 canvas 가 이미 떨어져 나간 옛 이미지를 가리킬 수 있다
+    try:
+        from .layer import update_active_image
+        update_active_image(None, bpy.context)
+    except Exception:
+        logger.debug("canvas resync after undo failed", exc_info=True)
 
 
 @bpy.app.handlers.persistent

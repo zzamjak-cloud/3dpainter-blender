@@ -15,6 +15,7 @@ from bpy.types import Operator
 
 from .common import PSContextMixin
 from ..paintsystem.image import read_rgba, write_rgba
+from ..paintsystem.pixel_undo import pixel_undo_group
 from ..utils.imaging import bilinear_resize
 from ..utils.registration import collect_classes
 
@@ -57,7 +58,9 @@ class PAINTSYSTEM_OT_QuickMergeDown(PSContextMixin, Operator):
     """아래 레이어와 즉시 병합한다 (이미지 레이어끼리는 다이얼로그·베이크 없음)"""
     bl_idname = "paint_system.quick_merge_down"
     bl_label = "Merge Down"
-    bl_options = {'REGISTER', 'UNDO'}
+    # undo 단위는 pixel_undo_group 이 남기는 IMAGE 스텝(레이어 삭제는 그 스텝에 딸린
+    # memfile 스냅샷에 담긴다) — 'UNDO' 는 헛도는 스텝을 더 만든다
+    bl_options = {'REGISTER'}
 
     @classmethod
     def _below_layer(cls, ps_ctx):
@@ -140,10 +143,15 @@ class PAINTSYSTEM_OT_QuickMergeDown(PSContextMixin, Operator):
         result[:, :, :3] = premult / safe
         result[:, :, 3] = out_a
 
-        write_rgba(below.image, result)
-
-        # 위 레이어 제거 → 아래 레이어가 병합 결과를 갖고 살아남는다 (PS와 동일)
+        # 위 레이어 제거 → 아래 레이어가 병합 결과를 갖고 살아남는다 (PS와 동일).
+        # 컬렉션에서 항목이 빠지면 below 참조가 어긋날 수 있어 이미지를 먼저 잡아 둔다.
+        # ID 변경을 픽셀 쓰기보다 먼저 끝내야 IMAGE 스텝의 memfile 스냅샷에 함께 담긴다
+        below_image = below.image
         channel.delete_layer(context, top)
+        # 아래 레이어 픽셀을 덮어쓰므로 IMAGE 스텝+스냅샷을 남긴다 — 없으면 undo 시 위
+        # 레이어만 되살아나 병합 결과와 겹쳐 보인다
+        with pixel_undo_group([below_image]):
+            write_rgba(below_image, result)
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()

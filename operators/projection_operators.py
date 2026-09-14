@@ -28,6 +28,7 @@ from bpy.types import Operator, PropertyGroup
 from .common import ModalDrawMixin, PSContextMixin
 from .psd_operators import channel_coord_settings
 from ..paintsystem.image import read_rgba, write_rgba
+from ..paintsystem.pixel_undo import pixel_undo_group, push_undo_step
 from ..utils.imaging import bilinear_resize
 from ..utils.registration import collect_classes
 
@@ -390,7 +391,7 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
     Enter: 신규 레이어로 투사 적용, ESC/우클릭: 취소"""
     bl_idname = "paint_system.projection_place"
     bl_label = "Place Projection"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER'}  # undo 단위는 push_undo_step 이 남긴다
 
     @classmethod
     def poll(cls, context):
@@ -608,7 +609,11 @@ class PAINTSYSTEM_OT_ProjectionPlace(ModalDrawMixin, PSContextMixin, Operator):
             lb = read_rgba(layer_img)
             sb = read_rgba(scratch)
             lb[:, :, 3] = sb[:, :, 0]
-            write_rgba(layer_img, lb)
+            # 새 이미지는 undo 후 redo 하면 빈 채로 되살아나므로 결과를 기록해 둔다
+            with pixel_undo_group([], created=[layer_img]):
+                write_rgba(layer_img, lb)
+            # 새 이미지만 만들었으므로 IMAGE 스텝이 없다 — 스텝을 직접 남긴다
+            push_undo_step("Projection Place")
 
             ip.canvas = layer_img
             from .view2d_operators import ensure_composite_shading

@@ -23,6 +23,7 @@ from bpy_extras import view3d_utils
 from .common import ModalDrawMixin
 from .view2d_operators import get_canvas_object, get_source_object
 from ..paintsystem.image import read_rgba, write_rgba
+from ..paintsystem.pixel_undo import pixel_undo_group
 from ..utils.registration import collect_classes
 
 MASK_IMAGE_NAME = "PS Selection Mask"
@@ -749,7 +750,8 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
     선택이 없으면 활성 레이어 전체를 채운다"""
     bl_idname = "paint_system.fill_selection"
     bl_label = "Fill with Brush Color"
-    bl_options = {'REGISTER', 'UNDO'}
+    # undo 단위는 pixel_undo_group 이 남기는 IMAGE 스텝 — 'UNDO' 는 헛도는 스텝을 더 만든다
+    bl_options = {'REGISTER'}
 
     @classmethod
     def poll(cls, context):
@@ -811,7 +813,10 @@ class PAINTSYSTEM_OT_FillSelection(Operator):
                     fill[c] * a + rgba[:, :, c] * src_a * (1.0 - a)
                 ) / safe
             rgba[:, :, 3] = out_a
-        write_rgba(img, rgba)
+        # 블렌더 undo 는 numpy 로 쓴 픽셀을 모르므로 IMAGE 스텝+스냅샷을 남긴다 —
+        # 없으면 채우기가 되돌아가지 않고 이후 스트로크 undo 가 채우기를 통째로 지운다
+        with pixel_undo_group([img]):
+            write_rgba(img, rgba)
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()
