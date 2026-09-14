@@ -232,6 +232,18 @@ def register() -> None:
             kc, name=km_name, space_type=space,
             idname='paint_system.toggle_pressure_size', key='P', shift=True)
 
+        # 3DPainter 포크: Q = 팔레트 피커 팝업 (포토샵 Swatches 패널 대용)
+        # 블렌더 기본 Q는 Screen 키맵의 Quick Favorites 이지만, 애드온 Image
+        # Paint 키맵이 우선하므로 텍스처 페인트 중에는 팔레트가 먼저 뜬다.
+        _add_keymap_entry(
+            kc,
+            name=km_name,
+            space_type=space,
+            idname='wm.call_panel',
+            key='Q',
+            properties={'name': 'MAT_PT_PaletteQuickPicker', 'keep_open': True},
+        )
+
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(
             kc,

@@ -475,6 +475,59 @@ class MAT_PT_TexPaintRMBMenu(PSContextMixin, Panel, UnifiedPaintPanel):
             sub.active = overlay.show_wireframes
             sub.prop(overlay, "wireframe_opacity", text="Wireframe", slider=True)
 
+class MAT_PT_PaletteQuickPicker(PSContextMixin, Panel, UnifiedPaintPanel):
+    """Q 단축키로 띄우는 팔레트 피커 팝업 (포토샵의 Swatches 패널 대용)"""
+    bl_idname = "MAT_PT_PaletteQuickPicker"
+    bl_label = "Palette"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+    bl_options = {"INSTANCED"}
+    bl_ui_units_x = 12
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'PAINT_TEXTURE'
+
+    def draw(self, context):
+        layout = self.layout
+        ps_ctx = self.parse_context(context)
+        settings = self.paint_settings(context)
+
+        if not settings:
+            layout.label(text="No paint settings available", icon='ERROR')
+            return
+
+        brush = settings.brush
+
+        # 현재 색/보조 색 스와치 + 스왑 (팔레트에서 고른 색을 즉시 확인)
+        if brush:
+            swatch_row = layout.row(align=True)
+            swatch_row.scale_y = 1.1
+            self.prop_unified_color(swatch_row, context, brush, "color", text="")
+            self.prop_unified_color(swatch_row, context, brush, "secondary_color", text="")
+            swatch_row.operator("paint.brush_colors_flip", icon='FILE_REFRESH', text="")
+
+        # 활성 팔레트 — 없으면 New 버튼만 노출된다
+        palette_box = layout.box()
+        palette_col = palette_box.column(align=True)
+        palette_col.label(text="Color Palette")
+        palette_col.template_ID(settings, "palette", new="palette.new")
+        if settings.palette:
+            palette_col.template_palette(settings, "palette", color=True)
+
+        # 최근 사용 색 히스토리
+        if ps_ctx.ps_scene_data:
+            history_box = layout.box()
+            history_col = history_box.column(align=True)
+            history_col.label(text="Color History")
+            history = ps_ctx.ps_scene_data.color_history_palette
+            if history:
+                history_col.template_palette(
+                    ps_ctx.ps_scene_data, "color_history_palette", color=True)
+            else:
+                history_col.label(text="No color history yet")
+
+
 class NODE_PT_PaintSystemShaderEditor(PSContextMixin, Panel):
     """Paint System panel in Shader Editor for viewing layers"""
     bl_label = "Paint System"
