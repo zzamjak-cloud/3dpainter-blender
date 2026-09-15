@@ -20,7 +20,7 @@ import bpy
 from bpy.types import Operator
 from bpy_extras import view3d_utils
 
-from .common import ModalDrawMixin
+from .common import ModalDrawMixin, hidden_faces_mask
 from .view2d_operators import get_canvas_object, get_source_object
 from ..paintsystem.image import read_rgba, write_rgba
 from ..paintsystem.pixel_undo import pixel_undo_group
@@ -343,12 +343,17 @@ def _mesh_uv_cache_key(obj) -> Optional[tuple]:
     if uv_layer is None:
         return None
     mesh.calc_loop_triangles()
+    # 페이스를 숨겨도 정점/루프/삼각형 수는 그대로다 — 숨김 상태를 키에 직접
+    # 넣지 않으면 숨긴 뒤에도 예전 배치가 재사용된다
+    hidden = hidden_faces_mask(mesh)
+    hidden_sig = 0 if hidden is None else hash(hidden.tobytes())
     return (
         obj.as_pointer(),
         len(mesh.vertices),
         len(mesh.loops),
         uv_layer.name,
         len(mesh.loop_triangles),
+        hidden_sig,
     )
 
 
@@ -377,6 +382,17 @@ def _get_mesh_uv_cache(obj, *, want_bvh: bool = False, shader=None) -> Optional[
         tl = np.empty(n_tris * 3, dtype=np.int32)
         mesh.loop_triangles.foreach_get('loops', tl)
         tl = tl.reshape(-1, 3)
+        # 숨긴 페이스는 오프스크린 UV 렌더에서 빼야 한다. 남겨 두면
+        # (a) 숨긴 면의 UV 가 선택 마스크에 섞여 칠한 적 없는 텍셀이 채워지고,
+        # (b) 숨긴 면이 깊이 버퍼를 선점해 그 뒤의 보이는 면이 선택에서 빠진다
+        hidden = hidden_faces_mask(mesh)
+        if hidden is not None and len(hidden) > 0:
+            poly_idx = np.empty(n_tris, dtype=np.int32)
+            mesh.loop_triangles.foreach_get('polygon_index', poly_idx)
+            np.clip(poly_idx, 0, len(hidden) - 1, out=poly_idx)
+            tl = tl[~hidden[poly_idx]]
+            if len(tl) == 0:
+                return None
         cache = _MeshUVCache(
             key=key, loop_v=loop_v, co=co, uvs=uvs, tl=tl)
         _mesh_uv_cache[obj_ptr] = cache

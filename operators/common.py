@@ -445,3 +445,19 @@ def timing_decorator(func_name=None):
             return result
         return wrapper
     return actual_decorator
+
+def hidden_faces_mask(mesh):
+    """페이스 숨김 플래그 배열. 숨긴 페이스가 없으면 None.
+
+    5.x 에서는 ``MeshPolygon.hide`` 가 없고 ``.hide_poly`` 불 속성만 남았다.
+    """
+    attr = mesh.attributes.get('.hide_poly')
+    if attr is None or attr.domain != 'FACE' or attr.data_type != 'BOOLEAN':
+        return None
+    try:
+        import numpy as np
+        mask = np.empty(len(attr.data), dtype=bool)
+        attr.data.foreach_get('value', mask)
+    except (RuntimeError, ValueError, AttributeError):
+        return None
+    return mask if mask.any() else None

@@ -33,7 +33,7 @@ from bl_ui.properties_paint_common import UnifiedPaintPanel
 from ..utils.registration import collect_classes
 from ..utils.unified_brushes import get_unified_settings
 from ..utils.logging import get_logger
-from .common import PSContextMixin
+from .common import PSContextMixin, hidden_faces_mask as _hidden_faces_mask
 
 logger = get_logger(__name__)
 
@@ -44,23 +44,6 @@ _TRANSPARENT_EPS = 1e-4
 # 숨긴 페이스를 뚫고 다시 쏠 때의 시작점 오프셋과 최대 재시도 횟수
 _RAY_SKIP_EPS = 1e-4
 _RAY_MAX_HOPS = 64
-
-
-def _hidden_faces_mask(mesh):
-    """페이스 숨김 플래그 배열. 숨긴 페이스가 없으면 None.
-
-    5.x 에서는 ``MeshPolygon.hide`` 가 없고 ``.hide_poly`` 불 속성만 남았다.
-    """
-    attr = mesh.attributes.get('.hide_poly')
-    if attr is None or attr.domain != 'FACE' or attr.data_type != 'BOOLEAN':
-        return None
-    try:
-        import numpy as np
-        mask = np.empty(len(attr.data), dtype=bool)
-        attr.data.foreach_get('value', mask)
-    except (RuntimeError, ValueError, AttributeError):
-        return None
-    return mask if mask.any() else None
 
 
 def _ray_cast_visible(obj_eval, mesh, origin, direction):
