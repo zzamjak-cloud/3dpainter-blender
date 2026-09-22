@@ -80,6 +80,9 @@ paths_exclude_pattern = [
   "/.github/",
   "/.gitignore",
   "/.prettierrc",
+  # 에이전트 도구 캐시 (런타임과 무관)
+  "/.serena/",
+  "/.omc/",
   # Python dev environment / tooling (not needed to run the add-on)
   "/.venv/",
   "/.python-version",
