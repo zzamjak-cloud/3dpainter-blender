@@ -6,8 +6,10 @@ Blender 4.3+ 부터 브러시는 에셋이고, `Paint.brush` 는 읽기 전용�
 브러시 데이터블록을 새로 만들어 고르게 하려면 `asset_mark()` 로 에셋 등록을
 해야 한다. 그러면 애셋 브라우저·브러시 셸프에 3DPainter 브러시가 쌓이므로,
 여기서는 **브러시를 만들지 않고 현재 활성 브러시에 프리셋을 덮어쓴다.**
-생성되는 데이터블록은 이름이 `.` 로 시작하는 이미지·텍스처뿐이라
-UI 목록에도, 에셋 라이브러리에도 나타나지 않는다.
+질감 텍스처는 번들 `art/art_textures.blend` 에서 **링크**해 온다. 링크된
+에셋 브러시는 로컬 ID 를 가리킬 수 없어 로컬 텍스처 대입이 무시되기 때문이다.
+링크된 텍스처는 `.` 로 시작하는 이름이라 UI 목록에도, 에셋 라이브러리에도
+나타나지 않는다.
 """
 
 from __future__ import annotations
@@ -210,37 +212,43 @@ def unload_art_previews():
 
 # ------------------------------------------------------------------ 적용 로직
 
-def _ensure_texture(filename: str):
-    """번들 PNG → 텍스처 데이터블록. 파일 단위로 재사용한다.
+def _library_path() -> Path:
+    return _art_dir() / "art_textures.blend"
 
-    이미지는 팩해 두어 애드온이 업데이트되어 경로가 바뀌어도
-    사용자 파일에서 그대로 열린다."""
-    path = _art_dir() / filename
-    if not path.exists():
-        return None
+
+def _find_linked(tex_name: str):
+    """이미 링크해 둔 아트 텍스처를 찾는다."""
+    for tex in bpy.data.textures:
+        if tex.name == tex_name and tex.library is not None:
+            return tex
+    return None
+
+
+def _ensure_texture(filename: str):
+    """번들 라이브러리에서 텍스처를 **링크**해 온다.
+
+    append(로컬 복사)가 아니라 link 여야 한다. 4.3+ 의 활성 브러시는 보통
+    Essentials 에서 링크된 데이터블록이고, 링크된 ID 는 로컬 ID 를 가리킬 수
+    없어 로컬 텍스처를 대입하면 예외 없이 무시된다 (수치만 바뀌고 질감은
+    그대로였던 원인). 링크된 텍스처는 링크·로컬 브러시 양쪽에 모두 붙는다."""
     stem = filename.rsplit(".", 1)[0]
     tex_name = f"{_DATA_PREFIX}{stem}"
-    tex = bpy.data.textures.get(tex_name)
-    if tex is not None and tex.image is not None:
-        return tex
 
-    img_name = f"{_DATA_PREFIX}{stem}"
-    img = bpy.data.images.get(img_name)
-    if img is None:
-        # check_existing 으로 사용자가 띄워 둔 동일 경로 이미지를 집어다
-        # 이름을 바꿔 버리지 않도록 항상 새로 읽는다
-        img = bpy.data.images.load(str(path), check_existing=False)
-        img.name = img_name
+    existing = _find_linked(tex_name)
+    if existing is not None and existing.image is not None:
+        return existing
+
+    library = _library_path()
+    if not library.exists():
+        return None
     try:
-        if not img.packed_file:
-            img.pack()
-    except RuntimeError:
-        pass
-
-    if tex is None:
-        tex = bpy.data.textures.new(tex_name, 'IMAGE')
-    tex.image = img
-    return tex
+        with bpy.data.libraries.load(str(library), link=True) as (src, dst):
+            if tex_name not in src.textures:
+                return None
+            dst.textures = [tex_name]
+    except (OSError, RuntimeError):
+        return None
+    return _find_linked(tex_name)
 
 
 def _apply_props(target, props) -> None:

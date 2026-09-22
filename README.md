@@ -52,7 +52,7 @@ N패널 → Paint System → **Brush → Art Brushes**: 썸네일을 고르면 *
 | Textured | Charcoal, Canvas Grain, Grunge, Spatter, Sponge, Cloud |
 
 - **에셋 라이브러리에 등록되지 않습니다.** 브러시 데이터블록을 새로 만들지 않고 활성 브러시의 텍스처·간격·필압만 바꾸므로, 에셋 브라우저와 브러시 셸프가 3DPainter 브러시로 오염되지 않습니다.
-- 질감 텍스처는 애드온에 번들된 PNG이며, 처음 쓰는 순간 `.PS_art_*` 이름으로 blend 파일에 팩됩니다 (`.` 로 시작해 UI 목록에는 보이지 않음).
+- 질감 텍스처는 애드온 번들 `art_textures.blend` 에서 **링크**됩니다 (`.PS_art_*`, `.` 로 시작해 UI 목록에는 보이지 않음). 링크인 이유: Blender 4.3+ 의 활성 브러시는 보통 Essentials 에서 링크된 데이터블록이고, 링크된 ID 는 로컬 텍스처를 가리킬 수 없어 대입이 조용히 무시됩니다. 따라서 애드온을 지우면 기존 파일의 아트 브러시 질감 링크가 끊깁니다.
 - **X** 버튼으로 텍스처를 걷어내고 기본 원형 브러시로 되돌립니다.
 - 크기(Size)와 색은 프리셋이 건드리지 않습니다.
 
@@ -114,6 +114,8 @@ git clone https://github.com/zzamjak-cloud/3dpainter-blender
 ln -sfn "$(pwd)/3dpainter-blender" ~/Library/Application\ Support/Blender/5.2/extensions/user_default/painter3d
 # Art Brush Pack 텍스처·썸네일 재생성 (numpy + Pillow 필요)
 python3 scripts/gen_art_brush_textures.py
+# 위 PNG 를 링크용 라이브러리로 묶기 (텍스처를 다시 뽑았다면 필수)
+blender --background --factory-startup --python scripts/gen_art_brush_library.py
 
 # 배포 빌드 (플랫폼별 zip)
 blender --command extension build --split-platforms --output-dir dist

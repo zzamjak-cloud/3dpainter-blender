@@ -17,6 +17,8 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 ART_DIR = ROOT / "operators" / "brushes" / "art"
+# 모양·결 원본 PNG 는 빌드에서 제외된다 — 배포본은 art_textures.blend 만 쓴다
+SRC_DIR = ART_DIR / "src"
 THUMB_DIR = ART_DIR / "thumbs"
 SIZE = 512
 THUMB = 128
@@ -93,8 +95,8 @@ def save_alpha(name: str, alpha: np.ndarray) -> None:
     buf = np.empty((h, w, 2), dtype=np.uint8)
     buf[..., 0] = 255
     buf[..., 1] = np.round(a * 255).astype(np.uint8)
-    ART_DIR.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(buf, mode="LA").save(ART_DIR / f"{name}.png", optimize=True)
+    SRC_DIR.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(buf, mode="LA").save(SRC_DIR / f"{name}.png", optimize=True)
 
 
 # ---------------------------------------------------------------- 모양 텍스처

@@ -89,6 +89,8 @@ paths_exclude_pattern = [
   "/pyproject.toml",
   "/uv.lock",
   "/run_tests.py",
+  # 아트 브러시 텍스처 원본 (배포본은 art_textures.blend 만 링크해 쓴다)
+  "/operators/brushes/art/src/",
   # Runtime caches (regenerated on demand; avoid shipping stale data)
   "/donation_cache.json",
   "/version_cache.json",
