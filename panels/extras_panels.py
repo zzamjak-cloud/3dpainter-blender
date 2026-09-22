@@ -93,6 +93,30 @@ def poll_brush_settings(context: Context):
     mode = UnifiedPaintPanel.get_brush_mode(context)
     return mode in ['PAINT_TEXTURE', 'PAINT_GREASE_PENCIL', 'VERTEX_GREASE_PENCIL', 'WEIGHT_GREASE_PENCIL', 'SCULPT_GREASE_PENCIL']
 
+def draw_art_brush_pack(layout: UILayout, context: Context):
+    """Art Brush Pack 픽커.
+
+    프리셋은 활성 브러시에 덮어쓰는 방식이라 에셋 라이브러리에는 아무것도
+    등록되지 않는다 — 브러시 셸프/에셋 브라우저가 깨끗하게 유지된다."""
+    from ..operators.brushes.art_brushes import get_active_art_brush, get_definition
+
+    wm = context.window_manager
+    settings = UnifiedPaintPanel.paint_settings(context)
+    brush = getattr(settings, "brush", None) if settings else None
+
+    col = layout.column()
+    col.template_icon_view(wm, "ps_art_brush", show_labels=True,
+                           scale=5.0, scale_popup=6.0)
+    row = col.row(align=True)
+    op = row.operator("paint_system.apply_art_brush",
+                      text="Apply", icon='BRUSH_DATA')
+    op.brush_id = wm.ps_art_brush
+    row.operator("paint_system.clear_art_brush", text="", icon='X')
+
+    definition = get_definition(get_active_art_brush(brush))
+    col.label(text="Applied: " + (definition[1] if definition else "—"))
+
+
 def draw_brush_settings(layout: UILayout, context: Context):
     layout.use_property_split = False
     layout.use_property_decorate = False
@@ -117,6 +141,11 @@ def draw_brush_settings(layout: UILayout, context: Context):
     
     # 아래 블록에서 col 이 재바인딩되므로 서브패널 부모를 미리 잡아 둔다
     settings_col = col
+    header, panel = settings_col.panel("art_brush_pack_panel", default_closed=True)
+    header.label(text="Art Brushes")
+    if panel:
+        draw_art_brush_pack(panel, context)
+
     header, panel = settings_col.panel("advanced_brush_settings_panel", default_closed=True)
     header.label(text="Advanced Settings")
     if panel:

@@ -40,6 +40,22 @@ PSD 연동용 psd-tools 휠이 동봉되어 있어 별도 파이썬 패키지 �
 | 브러시 강도 | **숫자키 1~9** = 10~90%, **0** = 100% (숫자패드 지원) |
 | 브러시 툴 복귀 | **B** |
 
+### Art Brush Pack
+
+N패널 → Paint System → **Brush → Art Brushes**: 썸네일을 고르면 **현재 브러시에 프리셋이 덮어써집니다.** 기본형 4종 + 드로잉 5종 + 회화 6종 + 질감 6종, 모두 21종.
+
+| 분류 | 브러시 |
+|---|---|
+| Basic | Hard Round, Soft Round, Airbrush, Hard Round Opacity |
+| Drawing | Pencil, Ink Pen, Chisel Marker, Crayon, Chalk / Pastel |
+| Painterly | Dry Brush, Oil Bristle, Impasto, Gouache, Watercolor, Rake |
+| Textured | Charcoal, Canvas Grain, Grunge, Spatter, Sponge, Cloud |
+
+- **에셋 라이브러리에 등록되지 않습니다.** 브러시 데이터블록을 새로 만들지 않고 활성 브러시의 텍스처·간격·필압만 바꾸므로, 에셋 브라우저와 브러시 셸프가 3DPainter 브러시로 오염되지 않습니다.
+- 질감 텍스처는 애드온에 번들된 PNG이며, 처음 쓰는 순간 `.PS_art_*` 이름으로 blend 파일에 팩됩니다 (`.` 로 시작해 UI 목록에는 보이지 않음).
+- **X** 버튼으로 텍스처를 걷어내고 기본 원형 브러시로 되돌립니다.
+- 크기(Size)와 색은 프리셋이 건드리지 않습니다.
+
 ### 레이어
 | 기능 | 사용법 |
 |---|---|
@@ -96,6 +112,9 @@ N패널 → **Projection Tex**: 2D 이미지(JPG/PNG)를 현재 뷰 화면 그�
 git clone https://github.com/zzamjak-cloud/3dpainter-blender
 # 블렌더 extensions 디렉토리에 심볼릭 링크 (macOS 예시)
 ln -sfn "$(pwd)/3dpainter-blender" ~/Library/Application\ Support/Blender/5.2/extensions/user_default/painter3d
+# Art Brush Pack 텍스처·썸네일 재생성 (numpy + Pillow 필요)
+python3 scripts/gen_art_brush_textures.py
+
 # 배포 빌드 (플랫폼별 zip)
 blender --command extension build --split-platforms --output-dir dist
 ```
