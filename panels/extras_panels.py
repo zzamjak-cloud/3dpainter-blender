@@ -174,8 +174,6 @@ def draw_brush_settings(layout: UILayout, context: Context):
             col.prop(active_brush, "input_samples", text="Input Samples")
             col.prop(active_brush, "spacing", text="Spacing")
             col.prop(active_brush, "hardness", text="Hardness")
-        panel.operator("paint_system.setup_brush_precision",
-                       text="Photoshop Defaults", icon='BRUSH_DATA')
         from ..preferences import get_preferences
         prefs = get_preferences(context)
         panel.separator()
@@ -528,8 +526,9 @@ class MAT_PT_PaletteQuickPicker(PSContextMixin, Panel, UnifiedPaintPanel):
 
         brush = settings.brush
 
-        # 현재 색/보조 색 스와치 + 스왑 (팔레트에서 고른 색을 즉시 확인)
+        # 전경색 피커를 곧바로 노출 — 스와치를 한 번 더 눌러야 하는 뎁스를 없앤다
         if brush:
+            self.prop_unified_color_picker(layout, context, brush, "color", value_slider=True)
             swatch_row = layout.row(align=True)
             swatch_row.scale_y = 1.1
             self.prop_unified_color(swatch_row, context, brush, "color", text="")

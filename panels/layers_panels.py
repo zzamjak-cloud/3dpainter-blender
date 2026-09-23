@@ -4,7 +4,6 @@ from bpy.utils import register_classes_factory
 import numpy as np
 import textwrap
 
-from ..custom_icons import get_image_editor_icon
 
 from ..utils.version import is_newer_than
 from .common import (
@@ -346,25 +345,22 @@ def draw_layer_settings(layout, context, ps_ctx=None):
         case _:
             pass
 
-    # 레이어 공통 HSV 이펙트
-    header, panel = layout.panel("layer_hsv_panel", default_closed=True)
-    row = header.row()
-    row.prop(active_layer, "use_hsv", text="")
-    row.label(text="HSV Adjust", icon='SHADERFX')
-    if panel:
-        box = panel.box()
-        col = box.column()
-        col.enabled = active_layer.use_hsv
+    # HSV 이펙트는 Add Layer의 Hue/Saturation 조정 레이어와 중복이라 신규 사용은 막고,
+    # 이미 켜둔 레이어만 끌 수 있게 남긴다
+    if active_layer.use_hsv:
+        header, panel = layout.panel("layer_hsv_panel", default_closed=True)
+        row = header.row()
+        row.prop(active_layer, "use_hsv", text="")
+        row.label(text="HSV Adjust (Legacy)", icon='SHADERFX')
         hsv_node = active_layer.find_node("layer_hsv")
-        if hsv_node:
+        if panel and hsv_node:
+            col = panel.box().column()
             col.use_property_split = True
             col.use_property_decorate = False
             col.prop(hsv_node.inputs["Hue"], "default_value", text="Hue", slider=True)
             col.prop(hsv_node.inputs["Saturation"], "default_value", text="Saturation", slider=True)
             col.prop(hsv_node.inputs["Value"], "default_value", text="Value", slider=True)
             col.prop(hsv_node.inputs["Fac"], "default_value", text="Factor", slider=True)
-        else:
-            col.label(text="Enable to apply HSV to this layer", icon='INFO')
 
     # Draw ui for adjustable sockets
     if active_layer.type == 'NODE_GROUP':
@@ -384,23 +380,26 @@ def draw_layer_settings(layout, context, ps_ctx=None):
         if panel:
             box = panel.box()
             col = box.column()
-            row = col.row(align=True)
-            scale_content(context, row, 1.1, 1.1)
-            if not active_layer.external_image:
-                icon_value = get_image_editor_icon(context.preferences.filepaths.image_editor) or get_icon('image')
-                row.operator("paint_system.quick_edit", text="Edit in Image Editor", icon_value=icon_value)
-            else:
+            # 외부 편집기 왕복은 PSD 연동이 대체한다 — 진행 중이던 외부 편집만 마무리할 수 있게 남긴다
+            if active_layer.external_image:
+                row = col.row(align=True)
+                scale_content(context, row, 1.1, 1.1)
                 if active_layer.edit_external_mode == 'IMAGE_EDIT':
-                    row.operator("paint_system.quick_edit", text="Open Image", icon_value=get_image_editor_icon(context.preferences.filepaths.image_editor))
                     row.operator("paint_system.reload_image", text="Reload Image", icon="FILE_REFRESH")
                 elif active_layer.edit_external_mode == 'VIEW_CAPTURE':
                     row.operator("paint_system.project_apply", text="Apply Edit")
-            row.operator("paint_system.toggle_image_editor", text="", depress=is_editor_open(context, 'IMAGE_EDITOR'), icon="BLENDER")
-            line_separator(col)
-            image_node = active_layer.source_node
-            panel = image_node_settings(col, image_node, active_layer, "image", simple_ui=True)
-            if panel:
                 line_separator(col)
+            image_node = active_layer.source_node
+            image = image_node.image if image_node else None
+            sub = col.column()
+            sub.use_property_split = True
+            sub.use_property_decorate = False
+            if image_node:
+                sub.prop(image_node, "interpolation", text="Filtering")
+                sub.prop(image_node, "extension", text="Extension")
+            if image:
+                sub.operator("paint_system.export_image", text="Export PNG...",
+                             icon="FILE_TICK").image_name = image.name
             draw_input_sockets(col, context, only_output=True, ps_ctx=ps_ctx)
             row = col.row(align=True)
             row.label(icon="BLANK1")
