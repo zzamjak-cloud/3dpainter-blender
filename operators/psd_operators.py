@@ -40,12 +40,47 @@ KEY_PSD_PATH = "ps_psd_path"
 _sync_state = {"running": False, "mtime": 0.0}
 
 
+def _resync_extension_wheels() -> bool:
+    """공용 .local/site-packages 휠을 Blender 내부 동기화로 복구한다.
+
+    `--factory-startup` 등 확장이 비활성인 채로 뜬 Blender 가 공용 휠
+    디렉터리를 비워 버리는 경우가 있어, 재설치 없이 되살리기 위함.
+    """
+    try:
+        import importlib
+        from bl_pkg import bl_extension_ops as ext_ops
+        enabled = set()
+        for name in bpy.context.preferences.addons.keys():
+            parts = name.split('.')
+            if len(parts) == 3 and parts[0] == 'bl_ext':
+                enabled.add((parts[1], parts[2]))
+        errors = []
+        ext_ops._extensions_repo_sync_wheels(
+            ext_ops.repo_cache_store_ensure(), enabled,
+            error_fn=lambda ex: errors.append(ex),
+        )
+        importlib.invalidate_caches()
+        if errors:
+            print("[3DPainter] 휠 동기화 오류:", errors)
+        return True
+    except Exception as ex:
+        print("[3DPainter] 휠 동기화 실패:", ex)
+        return False
+
+
 def _require_psd_tools():
     try:
         from psd_tools import PSDImage  # noqa: F401
         return None
     except ImportError:
-        return "psd-tools를 불러올 수 없습니다 — 확장을 zip으로 재설치해 휠을 적용하세요"
+        pass
+    if _resync_extension_wheels():
+        try:
+            from psd_tools import PSDImage  # noqa: F401
+            return None
+        except ImportError:
+            pass
+    return "psd-tools를 불러올 수 없습니다 — 블렌더 재시작 후에도 같으면 확장을 zip으로 재설치하세요"
 
 
 def _blend_by_name(name: str):

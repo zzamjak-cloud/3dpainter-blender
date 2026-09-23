@@ -9,7 +9,11 @@ Blender 4.3+ 의 활성 브러시는 보통 Essentials 에서 **링크된** 데�
 대입이 예외 없이 무시된다. 반면 **링크된** 텍스처는 정상적으로 붙는다.
 
 실행:
+    BLENDER_USER_EXTENSIONS="$(mktemp -d)" \
     blender --background --factory-startup --python scripts/gen_art_brush_library.py
+
+BLENDER_USER_EXTENSIONS 격리 필수: 확장이 비활성인 --factory-startup 이 사용자
+공용 휠(.local/site-packages)을 정리해 psd-tools 등이 사라진다.
 """
 
 import sys
