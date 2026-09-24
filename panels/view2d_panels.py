@@ -53,7 +53,7 @@ class MAT_PT_PaintSystem2DView(Panel):
         )
 
         # PSD 왕복 연동
-        from ..operators.psd_operators import KEY_PSD_PATH, is_sync_running
+        from ..operators.psd_operators import KEY_PSD_PATH, psd_display_name
         box = layout.box()
         col = box.column(align=True)
         col.label(text="Photoshop (PSD) / Image", icon='FILE_IMAGE')
@@ -63,14 +63,8 @@ class MAT_PT_PaintSystem2DView(Panel):
         row.operator("paint_system.open_psd_in_photoshop", text="Open PS")
         psd_path = context.scene.get(KEY_PSD_PATH)
         if psd_path:
-            import os
-            col.label(text=os.path.basename(psd_path))
-            col.operator(
-                "paint_system.toggle_psd_sync",
-                text="Stop Live Sync" if is_sync_running() else "Start Live Sync",
-                icon='PAUSE' if is_sync_running() else 'PLAY',
-                depress=is_sync_running(),
-            )
+            col.label(text=psd_display_name(psd_path))
+            col.operator("paint_system.sync_psd", text="Sync", icon='FILE_REFRESH')
 
 
 classes = collect_classes(sys.modules[__name__])

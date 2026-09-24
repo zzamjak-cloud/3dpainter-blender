@@ -5,6 +5,7 @@
 # 스마트 오브젝트·레이어 스타일)은 읽을 때 무시되고 다시 쓸 때 보존되지
 # 않는다 — 정교한 보정은 포토샵에서, 페인팅은 블렌더에서.
 
+import hashlib
 import os
 import sys
 
@@ -35,9 +36,73 @@ _PSD_TO_PS_EXTRA = {
 }
 
 KEY_PSD_PATH = "ps_psd_path"
+# 마지막 동기화 기준 — PSD 파일 수정 시각과 블렌더 레이어 스택 서명
+KEY_PSD_MTIME = "ps_psd_mtime"
+KEY_PSD_SIGNATURE = "ps_psd_signature"
 
-# 라이브 동기화 상태 (세션 한정)
-_sync_state = {"running": False, "mtime": 0.0}
+
+def _split_path(path: str) -> list[str]:
+    """OS 와 무관하게 \\ 와 / 모두를 구분자로 본다 (Windows 경로를 Mac 에서 읽는 경우)."""
+    return [p for p in path.replace('\\', '/').split('/') if p]
+
+
+def psd_display_name(raw: str) -> str:
+    parts = _split_path(raw)
+    return parts[-1] if parts else raw
+
+
+def store_psd_path(scene, path: str) -> None:
+    """연동 경로를 .blend 기준 상대 경로('//…', / 구분자)로 저장한다.
+
+    구글 드라이브 등으로 Windows(D:\\…)·Mac(…/GoogleDrive-…) 사이에서 같은 폴더를
+    쓸 때 절대 경로는 다른 PC 에서 깨지지만, .blend 기준 상대 경로는 양쪽에서 맞는다.
+    """
+    stored = path
+    if bpy.data.filepath:
+        try:
+            stored = bpy.path.relpath(path)
+        except ValueError:
+            pass  # Windows 에서 드라이브가 다르면 상대 경로를 만들 수 없다
+    if stored.startswith('//'):
+        stored = '//' + '/'.join(_split_path(stored[2:]))
+    scene[KEY_PSD_PATH] = stored
+
+
+def resolve_psd_path(context, heal: bool = False) -> str | None:
+    """저장된 연동 경로를 이 PC 의 실제 경로로 푼다.
+
+    그대로 없으면 다른 PC 의 절대 경로로 보고, 경로 끝부분을 .blend 폴더(와 그 상위
+    3단계)에 이어 붙여 같은 파일을 찾는다 — 예: D:\\Project\\Zombie\\textures\\a.psd →
+    <.blend 폴더>/textures/a.psd. heal=True 면 찾은 경로를 상대 경로로 다시 저장한다.
+    못 찾으면 저장된 값을 그대로 푼 경로를 돌려준다 (새로 내보낼 때 쓰임).
+    """
+    raw = context.scene.get(KEY_PSD_PATH)
+    if not raw:
+        return None
+    parts = _split_path(raw[2:] if raw.startswith('//') else raw)
+    if raw.startswith('//'):
+        direct = bpy.path.abspath('//' + os.path.join(*parts)) if parts else bpy.path.abspath(raw)
+    else:
+        direct = raw
+    if os.path.isfile(direct):
+        return direct
+    blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else None
+    if blend_dir and parts:
+        if parts[0].endswith(':'):
+            parts = parts[1:]  # Windows 드라이브 문자
+        base = blend_dir
+        for _ in range(4):
+            for k in range(len(parts)):
+                candidate = os.path.join(base, *parts[k:])
+                if os.path.isfile(candidate):
+                    if heal:
+                        store_psd_path(context.scene, candidate)
+                    return candidate
+            parent = os.path.dirname(base)
+            if parent == base:
+                break
+            base = parent
+    return direct
 
 
 def _resync_extension_wheels() -> bool:
@@ -217,7 +282,7 @@ class PAINTSYSTEM_OT_ExportPSD(PSContextMixin, Operator):
 
     def invoke(self, context, event):
         if not self.filepath:
-            self.filepath = context.scene.get(KEY_PSD_PATH, "untitled.psd")
+            self.filepath = resolve_psd_path(context) or "untitled.psd"
         # Custom 필드 초기값은 픽셀을 읽지 않고 정할 수 있는 최대 레이어 크기로
         layers = _image_layers_top_down(self.parse_context(context).active_channel)
         if layers:
@@ -238,41 +303,68 @@ class PAINTSYSTEM_OT_ExportPSD(PSContextMixin, Operator):
         if err:
             self.report({'ERROR'}, err)
             return {'CANCELLED'}
-        from psd_tools import PSDImage
-        from psd_tools.api.layers import PixelLayer
-        from PIL import Image
-
-        ps_ctx = self.parse_context(context)
-        layers = _image_layers_top_down(ps_ctx.active_channel)
-        if not layers:
+        channel = self.parse_context(context).active_channel
+        if not _image_layers_top_down(channel):
             self.report({'ERROR'}, "내보낼 이미지 레이어가 없습니다")
             return {'CANCELLED'}
-
+        size = None
         if self.canvas_size == 'CUSTOM':
-            w, h = int(self.canvas_width), int(self.canvas_height)
-        else:
-            w, h = _export_canvas_size(layers)
-        psd = PSDImage.new(mode='RGBA', size=(w, h))
-
-        # PSD 내부 리스트는 아래→위 순서: 스택의 맨 아래 레이어부터 append
-        for layer in reversed(layers):
-            arr = _image_to_uint8(layer.image)
-            pil = Image.fromarray(arr, mode='RGBA')
-            pixel_layer = PixelLayer.frompil(pil, psd, layer.layer_name, 0, 0)
-            pixel_layer.opacity = int(round(max(0.0, min(1.0, layer.opacity)) * 255))
-            pixel_layer.visible = bool(layer.enabled)
-            pixel_layer.blend_mode = _blend_by_name(
-                _PS_TO_PSD.get(layer.blend_mode, 'normal'))
-            psd.append(pixel_layer)
-
+            size = (int(self.canvas_width), int(self.canvas_height))
         path = bpy.path.abspath(self.filepath)
         if not path.lower().endswith('.psd'):
             path += '.psd'
-        psd.save(path)
-        context.scene[KEY_PSD_PATH] = path
-        _sync_state["mtime"] = os.path.getmtime(path)
+        w, h = _export_channel_to_psd(context, channel, path, size)
         self.report({'INFO'}, f"PSD 내보내기 완료: {os.path.basename(path)} ({w}x{h})")
         return {'FINISHED'}
+
+
+def _blender_signature(channel) -> str:
+    """이미지 레이어 스택(순서·이름·표시·불투명도·블렌드·픽셀)의 서명.
+
+    Sync 버튼을 누를 때만 계산한다 (레이어당 텍스처 한 번 읽기).
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for layer in _image_layers_top_down(channel):
+        img = layer.image
+        digest.update(
+            f"{layer.layer_name}|{int(layer.enabled)}|{round(float(layer.opacity), 4)}"
+            f"|{layer.blend_mode}|{img.size[0]}x{img.size[1]};".encode())
+        digest.update(np.ascontiguousarray(read_rgba(img)))
+    return digest.hexdigest()
+
+
+def _mark_synced(context, channel, path) -> None:
+    """현재 상태를 동기화 기준으로 기록한다."""
+    scene = context.scene
+    store_psd_path(scene, path)
+    scene[KEY_PSD_MTIME] = os.path.getmtime(path) if os.path.isfile(path) else 0.0
+    scene[KEY_PSD_SIGNATURE] = _blender_signature(channel)
+
+
+def _export_channel_to_psd(context, channel, path, size=None) -> tuple[int, int]:
+    """채널의 이미지 레이어 스택을 PSD 로 저장하고 동기화 기준을 갱신한다."""
+    from psd_tools import PSDImage
+    from psd_tools.api.layers import PixelLayer
+    from PIL import Image
+
+    layers = _image_layers_top_down(channel)
+    w, h = size if size else _export_canvas_size(layers)
+    psd = PSDImage.new(mode='RGBA', size=(w, h))
+
+    # PSD 내부 리스트는 아래→위 순서: 스택의 맨 아래 레이어부터 append
+    for layer in reversed(layers):
+        arr = _image_to_uint8(layer.image)
+        pil = Image.fromarray(arr, mode='RGBA')
+        pixel_layer = PixelLayer.frompil(pil, psd, layer.layer_name, 0, 0)
+        pixel_layer.opacity = int(round(max(0.0, min(1.0, layer.opacity)) * 255))
+        pixel_layer.visible = bool(layer.enabled)
+        pixel_layer.blend_mode = _blend_by_name(
+            _PS_TO_PSD.get(layer.blend_mode, 'normal'))
+        psd.append(pixel_layer)
+
+    psd.save(path)
+    _mark_synced(context, channel, path)
+    return w, h
 
 
 def _clear_channel_layers(context, channel) -> int:
@@ -481,13 +573,13 @@ class PAINTSYSTEM_OT_ImportPSD(PSContextMixin, Operator):
         if err:
             self.report({'ERROR'}, err)
             return {'CANCELLED'}
-        # 라이브 동기화는 PSD 전용이므로 PSD 를 가져왔을 때만 경로를 기억한다
+        # Sync 는 PSD 전용이므로 PSD 를 가져왔을 때만 경로를 기억한다
         # (undo 스텝에 함께 담기도록 픽셀 쓰기보다 먼저 기록)
-        context.scene[KEY_PSD_PATH] = path
-        _sync_state["mtime"] = os.path.getmtime(path)
+        store_psd_path(context.scene, path)
         count, steps = _import_psd_into_channel(
             context, ps_ctx.active_channel, path,
             replace=(self.import_mode == 'REPLACE'))
+        _mark_synced(context, ps_ctx.active_channel, path)
         if steps == 0:
             push_undo_step("Import PSD")
         how = "교체" if self.import_mode == 'REPLACE' else "병합"
@@ -503,11 +595,11 @@ class PAINTSYSTEM_OT_OpenPSDInPhotoshop(Operator):
 
     @classmethod
     def poll(cls, context):
-        path = context.scene.get(KEY_PSD_PATH)
+        path = resolve_psd_path(context)
         if not path:
             cls.poll_message_set("먼저 Export 또는 Import로 PSD를 연동하세요")
             return False
-        if not os.path.isfile(bpy.path.abspath(path)):
+        if not os.path.isfile(path):
             cls.poll_message_set(f"연동된 PSD 파일이 없습니다: {path}")
             return False
         return True
@@ -515,7 +607,7 @@ class PAINTSYSTEM_OT_OpenPSDInPhotoshop(Operator):
     def execute(self, context):
         import subprocess
         import sys
-        path = bpy.path.abspath(context.scene.get(KEY_PSD_PATH))
+        path = resolve_psd_path(context, heal=True)
         try:
             if sys.platform == 'darwin':
                 # 포토샵 지정 실행, 미설치 등 실패 시 기본 연결 앱으로 폴백
@@ -533,60 +625,109 @@ class PAINTSYSTEM_OT_OpenPSDInPhotoshop(Operator):
         return {'FINISHED'}
 
 
-def _sync_timer():
-    """PSD 파일 변경 감시 — 포토샵에서 저장하면 이름이 같은 레이어 픽셀 갱신."""
-    if not _sync_state["running"]:
-        return None  # 타이머 종료
-    scene = bpy.context.scene
-    path = scene.get(KEY_PSD_PATH)
-    if not path or not os.path.isfile(path):
-        return 2.0
-    try:
-        mtime = os.path.getmtime(path)
-        if mtime > _sync_state["mtime"] + 1e-4:
-            _sync_state["mtime"] = mtime
-            from .common import PSContextMixin as _mix
-            ps_ctx = _mix.parse_context(bpy.context)
-            if ps_ctx.active_channel is not None:
-                # 타이머 컨텍스트에서는 레이어 생성 없이 픽셀만 갱신 (안전)
-                # 덮어쓴 이미지마다 IMAGE undo 스텝이 남는다
-                _import_psd_into_channel(
-                    bpy.context, ps_ctx.active_channel, path, create_missing=False)
-    except Exception:
-        pass
-    return 2.0
+def _linked_psd_path(context) -> str | None:
+    # 오퍼레이터 실행 경로에서만 불리므로 찾은 경로를 상대 경로로 고쳐 저장한다
+    return resolve_psd_path(context, heal=True)
 
 
-class PAINTSYSTEM_OT_TogglePSDSync(Operator):
-    """PSD 라이브 동기화를 켜거나 끈다 (포토샵 저장 → 자동 반영)"""
-    bl_idname = "paint_system.toggle_psd_sync"
-    bl_label = "Toggle PSD Live Sync"
+class PAINTSYSTEM_OT_SyncPSD(PSContextMixin, Operator):
+    """연동된 PSD 와 양방향 동기화한다 — 마지막 동기화 이후 바뀐 쪽을 다른 쪽에 반영"""
+    bl_idname = "paint_system.sync_psd"
+    bl_label = "Sync PSD"
+    # undo 단위는 가져오기 쪽 pixel_undo_group 스텝 (내보내기는 블렌더 데이터 불변)
     bl_options = {'REGISTER'}
+
+    direction: EnumProperty(
+        name="Direction",
+        items=[
+            ('AUTO', "Auto", "바뀐 쪽을 자동 판단"),
+            ('PULL', "PSD → Blender", "PSD 파일 내용으로 블렌더 레이어를 갱신"),
+            ('PUSH', "Blender → PSD", "블렌더 레이어로 PSD 파일을 덮어쓰기"),
+        ],
+        default='AUTO',
+        options={'SKIP_SAVE'},
+    )
 
     @classmethod
     def poll(cls, context):
-        return bool(context.scene.get(KEY_PSD_PATH))
+        if not context.scene.get(KEY_PSD_PATH):
+            cls.poll_message_set("먼저 Export 또는 Import로 PSD를 연동하세요")
+            return False
+        return cls.parse_context(context).active_channel is not None
+
+    def _changes(self, context):
+        """(PSD 변경 여부, 블렌더 변경 여부). 기준이 없으면 둘 다 바뀐 것으로 본다."""
+        scene = context.scene
+        path = _linked_psd_path(context)
+        channel = self.parse_context(context).active_channel
+        base_mtime = scene.get(KEY_PSD_MTIME)
+        base_sig = scene.get(KEY_PSD_SIGNATURE)
+        if not os.path.isfile(path):
+            return False, True  # 파일이 없으면 내보내기만 가능
+        psd_changed = base_mtime is None or os.path.getmtime(path) > float(base_mtime) + 1e-4
+        blender_changed = base_sig is None or _blender_signature(channel) != base_sig
+        return psd_changed, blender_changed
+
+    def _path_error(self, context) -> str | None:
+        """다른 PC(예: Windows 경로)에서 연동한 파일처럼 폴더조차 없으면 쓰지 않는다."""
+        path = _linked_psd_path(context)
+        if os.path.isfile(path) or os.path.isdir(os.path.dirname(path)):
+            return None
+        return f"연동된 PSD 경로를 찾을 수 없습니다: {path} — Export/Import 로 다시 연동하세요"
+
+    def invoke(self, context, event):
+        err = _require_psd_tools() or self._path_error(context)
+        if err:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
+        psd_changed, blender_changed = self._changes(context)
+        if psd_changed and blender_changed:
+            # 양쪽 모두 바뀜 — 어느 쪽을 살릴지 사용자가 고른다
+            self.direction = 'PULL'
+            return context.window_manager.invoke_props_dialog(
+                self, title="PSD와 블렌더 양쪽이 모두 바뀌었습니다", confirm_text="Sync")
+        return self._run(context, psd_changed, blender_changed)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "direction", expand=True)
+        col.label(text="선택하지 않은 쪽의 변경 사항은 덮어써집니다", icon='ERROR')
 
     def execute(self, context):
-        if _sync_state["running"]:
-            _sync_state["running"] = False
-            self.report({'INFO'}, "PSD 동기화 중지")
-        else:
-            err = _require_psd_tools()
-            if err:
-                self.report({'ERROR'}, err)
+        err = _require_psd_tools() or self._path_error(context)
+        if err:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
+        if self.direction == 'PULL':
+            return self._run(context, True, False)
+        if self.direction == 'PUSH':
+            return self._run(context, False, True)
+        return self._run(context, *self._changes(context))
+
+    def _run(self, context, pull: bool, push: bool):
+        path = _linked_psd_path(context)
+        channel = self.parse_context(context).active_channel
+        name = os.path.basename(path)
+        if pull and push:
+            self.report({'WARNING'}, "양쪽이 모두 바뀌어 방향을 골라야 합니다")
+            return {'CANCELLED'}
+        if pull:
+            count, steps = _import_psd_into_channel(context, channel, path)
+            _mark_synced(context, channel, path)
+            if steps == 0:
+                push_undo_step("Sync PSD")
+            self.report({'INFO'}, f"PSD → Blender: {name} 레이어 {count}개 반영")
+            return {'FINISHED'}
+        if push:
+            if not _image_layers_top_down(channel):
+                self.report({'ERROR'}, "내보낼 이미지 레이어가 없습니다")
                 return {'CANCELLED'}
-            _sync_state["running"] = True
-            path = context.scene.get(KEY_PSD_PATH)
-            if path and os.path.isfile(path):
-                _sync_state["mtime"] = os.path.getmtime(path)
-            bpy.app.timers.register(_sync_timer, first_interval=2.0)
-            self.report({'INFO'}, "PSD 동기화 시작 (2초 간격 감시)")
+            _export_channel_to_psd(context, channel, path)
+            # 포토샵은 열려 있는 문서를 디스크에서 자동으로 다시 읽지 않는다
+            self.report({'INFO'}, f"Blender → PSD: {name} 저장 (포토샵에 열려 있으면 다시 열어 주세요)")
+            return {'FINISHED'}
+        self.report({'INFO'}, "이미 동기화된 상태입니다")
         return {'FINISHED'}
-
-
-def is_sync_running() -> bool:
-    return _sync_state["running"]
 
 
 classes = collect_classes(sys.modules[__name__])
@@ -598,6 +739,5 @@ def register():
 
 
 def unregister():
-    _sync_state["running"] = False
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
