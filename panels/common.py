@@ -1,3 +1,5 @@
+import time
+
 import bpy
 from bpy.types import Image, ImagePreview
 import numpy as np
@@ -402,14 +404,15 @@ def is_image_painted(image: Image | ImagePreview | None) -> bool:
     """
     if not image:
         return False
+    # 레이어 목록을 그릴 때마다 불리므로 파이썬 any() 대신 numpy 로 검사한다
     if isinstance(image, Image):
-        pixels = np.zeros(len(image.pixels), dtype=np.float32)
+        pixels = np.empty(len(image.pixels), dtype=np.float32)
         image.pixels.foreach_get(pixels)
-        return len(pixels) > 0 and any(pixels)
+        return bool(pixels.size) and bool(np.any(pixels))
     elif isinstance(image, ImagePreview):
-        pixels = np.zeros(len(image.image_pixels_float), dtype=np.float32)
+        pixels = np.empty(len(image.image_pixels_float), dtype=np.float32)
         image.image_pixels_float.foreach_get(pixels)
-        return len(pixels) > 0 and any(pixels)
+        return bool(pixels.size) and bool(np.any(pixels))
 
 def draw_enum_operator_menu(layout: bpy.types.UILayout, enum_items, operator_id: str, type_attr: str, first_icon: str, skip_types=None):
     """Draw a menu of operators from an enum, giving the first item a distinctive icon.
@@ -537,6 +540,7 @@ def draw_warning_box(layout: bpy.types.UILayout, lines):
 # draw()는 읽기 전용이어야 한다. 프리뷰 생성은 데이터 쓰기이므로 draw 중 호출하면
 # 무한 리드로우·크래시로 이어진다. 아래 큐에 모아 두었다가 타이머에서 한 번에 처리한다.
 _pending_previews: set = set()
+_preview_request_times: dict = {}
 
 
 def _flush_pending_previews():
@@ -567,6 +571,16 @@ def request_preview(datablock, mode: str = 'ENSURE'):
     key = (datablock, mode)
     if key in _pending_previews:
         return
+    # 투명 레이어는 생성 후에도 '빈 프리뷰'라 다시 그릴 때마다 재요청되는
+    # 루프가 생긴다 — 같은 데이터블록은 3초에 한 번만 생성한다
+    now = time.monotonic()
+    try:
+        stamp_key = (datablock.as_pointer(), mode)
+    except ReferenceError:
+        return
+    if now - _preview_request_times.get(stamp_key, -1e9) < 3.0:
+        return
+    _preview_request_times[stamp_key] = now
     _pending_previews.add(key)
     if not bpy.app.timers.is_registered(_flush_pending_previews):
         bpy.app.timers.register(_flush_pending_previews, first_interval=0.0)

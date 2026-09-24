@@ -172,15 +172,17 @@ class PAINTSYSTEM_OT_EyedropperCursor(Operator):
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
+        # 종료 시에도 PASS_THROUGH — 그냥 FINISHED 면 종료를 촉발한 이벤트(Alt 직후 누른
+        # 단축키 등)를 이 모달이 삼켜 단축키가 가끔 먹히지 않는다
         if event.type == 'WINDOW_DEACTIVATE':
             context.window.cursor_modal_restore()
-            return {'FINISHED'}
+            return {'FINISHED', 'PASS_THROUGH'}
         # ALT 키 자체의 반복 PRESS는 유지, 그 외 alt가 풀린 이벤트면 종료
         if not event.alt and not (
             event.type in {'LEFT_ALT', 'RIGHT_ALT'} and event.value == 'PRESS'
         ):
             context.window.cursor_modal_restore()
-            return {'FINISHED'}
+            return {'FINISHED', 'PASS_THROUGH'}
         return {'PASS_THROUGH'}
 
 

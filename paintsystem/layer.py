@@ -55,7 +55,10 @@ def update_brush_settings(self=None, context: bpy.types.Context = bpy.context):
     brush = context.tool_settings.image_paint.brush
     if not brush:
         return
-    brush.use_alpha = not active_layer.lock_alpha
+    # 같은 값 재대입도 RNA 업데이트를 발생시키므로 다를 때만 쓴다
+    want_alpha = not active_layer.lock_alpha
+    if brush.use_alpha != want_alpha:
+        brush.use_alpha = want_alpha
 
 def update_active_image(self=None, context: bpy.types.Context = None):
     context = context or bpy.context
@@ -72,17 +75,24 @@ def update_active_image(self=None, context: bpy.types.Context = None):
     if image_paint.mode == 'MATERIAL':
         image_paint.mode = 'IMAGE'
     if not active_layer or active_layer.lock_layer or active_channel.use_bake_image:
-        image_paint.canvas = None
+        if image_paint.canvas is not None:
+            image_paint.canvas = None
         # Unable to paint
         return
-    
+
+    # undo·레이어 전환마다 불리는 경로 — UV active 는 같은 값이어도 대입하면 메쉬
+    # 재평가(고폴리에서 끊김)를 일으키므로 바뀔 때만 쓴다
     selected_image: Image = active_layer.image
-    image_paint.canvas = selected_image
+    if image_paint.canvas != selected_image:
+        image_paint.canvas = selected_image
+    uv_name = None
     if active_layer.coord_type == 'UV':
-        if active_layer.uv_map_name and obj.data.uv_layers.get(active_layer.uv_map_name):
-            obj.data.uv_layers[active_layer.uv_map_name].active = True
-    elif active_layer.coord_type == 'AUTO' and obj.data.uv_layers.get(DEFAULT_PS_UV_MAP_NAME):
-        obj.data.uv_layers[DEFAULT_PS_UV_MAP_NAME].active = True
+        uv_name = active_layer.uv_map_name
+    elif active_layer.coord_type == 'AUTO':
+        uv_name = DEFAULT_PS_UV_MAP_NAME
+    uv_layer = obj.data.uv_layers.get(uv_name) if uv_name else None
+    if uv_layer is not None and not uv_layer.active:
+        uv_layer.active = True
 
     # 3DPainter 포크: Solid+Texture 셰이딩은 활성 캔버스 한 장만 표시해
     # 다른 레이어가 안 보인 채 잘못 칠하게 되므로 레이어/채널 전환 시에도 보정한다.

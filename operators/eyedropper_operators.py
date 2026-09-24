@@ -129,8 +129,12 @@ def _layer_opacity(layer) -> float:
         return 1.0
 
 
-def composite_layer_stack(channel, u: float, v: float):
+def composite_layer_stack(channel, uv_of):
     """채널의 레이어 스택을 위에서 아래로 알파 합성해 순수 색 RGB 를 구한다.
+
+    ``uv_of(uv_map_name)`` 은 커서 아래 지점의 해당 UV 맵 좌표를 돌려준다.
+    레이어마다 UV 맵이 다를 수 있어(AUTO 레이어는 PS_UVMap, 기존 텍스처는 UVMap)
+    활성 UV 하나로 전부 읽으면 엉뚱한 위치의 색을 집는다.
 
     블렌드 모드는 무시하고 알파 오버로만 합성한다 — 스포이드가 필요로 하는 건
     "여기 칠해진 색" 이지 최종 셰이딩 결과가 아니기 때문이다.
@@ -147,7 +151,10 @@ def composite_layer_stack(channel, u: float, v: float):
     for layer in layers:
         if layer is None or not getattr(layer, 'enabled', True):
             continue
-        rgba = _layer_rgba(layer, u, v)
+        uv = uv_of(getattr(layer, 'uv_map_name', ''))
+        if uv is None:
+            continue
+        rgba = _layer_rgba(layer, uv[0], uv[1])
         if rgba is None:
             continue
         alpha = rgba[3] * _layer_opacity(layer)
@@ -168,9 +175,11 @@ def composite_layer_stack(channel, u: float, v: float):
 
 
 def uv_under_cursor(context, region, coord):
-    """리전 좌표 아래 표면의 UV 를 구한다. 맞은 게 없으면 None.
+    """리전 좌표 아래 표면의 UV 조회 함수를 구한다. 맞은 게 없으면 None.
 
-    모디파이어가 적용된 지오메트리와 인덱스를 맞추려고 평가된 오브젝트를 쓴다.
+    반환값 ``uv_of(uv_map_name) -> (u, v) | None`` — 이름이 비었거나 없는 UV 맵이면
+    활성 UV 를 쓴다. 모디파이어가 적용된 지오메트리와 인덱스를 맞추려고 평가된
+    오브젝트를 쓴다.
     """
     obj = context.view_layer.objects.active
     if obj is None or obj.type != 'MESH':
@@ -182,8 +191,8 @@ def uv_under_cursor(context, region, coord):
     depsgraph = context.evaluated_depsgraph_get()
     obj_eval = obj.evaluated_get(depsgraph)
     mesh = obj_eval.data
-    uv_layer = mesh.uv_layers.active
-    if uv_layer is None:
+    active_uv = mesh.uv_layers.active
+    if active_uv is None:
         return None
 
     origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
@@ -201,28 +210,32 @@ def uv_under_cursor(context, region, coord):
     if len(loop_indices) < 3:
         return None
     verts = [mesh.vertices[mesh.loops[i].vertex_index].co for i in loop_indices]
-    uvs = [uv_layer.data[i].uv for i in loop_indices]
 
-    # 폴리곤을 팬 삼각분할해 히트 지점을 포함하는 삼각형을 찾는다
-    fallback = None
-    for i in range(1, len(verts) - 1):
-        tri = (verts[0], verts[i], verts[i + 1])
-        tri_uv = (
-            Vector((uvs[0][0], uvs[0][1], 0.0)),
-            Vector((uvs[i][0], uvs[i][1], 0.0)),
-            Vector((uvs[i + 1][0], uvs[i + 1][1], 0.0)),
-        )
-        if fallback is None:
-            fallback = (tri, tri_uv)
-        if intersect_point_tri(location, *tri):
-            result = barycentric_transform(location, *tri, *tri_uv)
-            return (result.x, result.y)
-
-    if fallback is None:
-        return None
+    # 폴리곤을 팬 삼각분할해 히트 지점을 포함하는 삼각형을 찾는다.
     # 부동소수 오차로 어느 삼각형에도 안 걸리면 첫 삼각형 기준으로 근사한다
-    result = barycentric_transform(location, *fallback[0], *fallback[1])
-    return (result.x, result.y)
+    tri_index = 1
+    for i in range(1, len(verts) - 1):
+        if intersect_point_tri(location, verts[0], verts[i], verts[i + 1]):
+            tri_index = i
+            break
+    tri = (verts[0], verts[tri_index], verts[tri_index + 1])
+    tri_loops = (loop_indices[0], loop_indices[tri_index], loop_indices[tri_index + 1])
+
+    cache = {}
+
+    def uv_of(uv_map_name):
+        uv_layer = mesh.uv_layers.get(uv_map_name) if uv_map_name else None
+        if uv_layer is None:
+            uv_layer = active_uv
+        key = uv_layer.name
+        if key not in cache:
+            tri_uv = [Vector((uv_layer.data[i].uv[0], uv_layer.data[i].uv[1], 0.0))
+                      for i in tri_loops]
+            result = barycentric_transform(location, *tri, *tri_uv)
+            cache[key] = (result.x, result.y)
+        return cache[key]
+
+    return uv_of
 
 
 def apply_brush_color(context, color) -> None:
@@ -274,10 +287,10 @@ class PAINTSYSTEM_OT_ColorSample(PSContextMixin, Operator):
         )
 
         if in_view_3d:
-            uv = uv_under_cursor(context, region, (self.x, self.y))
-            if uv is not None:
+            uv_of = uv_under_cursor(context, region, (self.x, self.y))
+            if uv_of is not None:
                 ps_ctx = self.parse_context(context)
-                color = composite_layer_stack(ps_ctx.active_channel, uv[0], uv[1])
+                color = composite_layer_stack(ps_ctx.active_channel, uv_of)
                 if color is not None:
                     apply_brush_color(context, color)
                     return {'FINISHED'}

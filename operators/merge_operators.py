@@ -84,10 +84,15 @@ class PAINTSYSTEM_OT_QuickMergeDown(PSContextMixin, Operator):
             and layer.type != 'FOLDER' and below.type != 'FOLDER'
             and layer.parent_id == below.parent_id
             and layer.enabled and below.enabled
+            # 폴백인 베이크 병합도 이 조건을 막으므로 여기서 걸러야 예외가 안 난다
+            and not below.modifies_color_data
         )
 
     def _fallback(self, context):
         # 복잡한 케이스는 업스트림 베이크 병합으로 (다이얼로그 포함)
+        if not bpy.ops.paint_system.merge_down.poll():
+            self.report({'WARNING'}, "이 레이어 조합은 병합할 수 없습니다")
+            return {'CANCELLED'}
         return bpy.ops.paint_system.merge_down('INVOKE_DEFAULT')
 
     def execute(self, context):

@@ -30,7 +30,9 @@ MASK_IMAGE_NAME = "PS Selection Mask"
 
 # 커밋 후에도 유지되는 선택 윤곽선 (세션 한정)
 # polys: 2D 캔버스 뷰용 UV 폴리곤, points3d: 3D 뷰용 표면 경계점(월드)
-_outline = {"polys": [], "points3d": [], "handle": None, "handle3d": None}
+_outline = {"polys": [], "points3d": [], "handle": None, "handle3d": None,
+            # 배치 캐시 — 뷰가 그대로인 동안(붓질 중) 매 프레임 재생성을 피한다
+            "cache2d": {}, "cache3d": None}
 
 
 def _draw_polyline(region, coords, color) -> None:
@@ -99,16 +101,20 @@ def _draw_dashed(coords, dash: float = 5.0):
     return segs_white, segs_black
 
 
-def _draw_marching_ants(coords) -> None:
-    """포토샵식 흑백 교차 점선 (1px, Metal 호환)."""
+def _marching_ants_batches(shader, coords) -> list:
+    """포토샵식 흑백 교차 점선 배치 (1px, Metal 호환)."""
     segs_white, segs_black = _draw_dashed(coords)
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    return [
+        (batch_for_shader(shader, 'LINES', {"pos": segs}), color)
+        for segs, color in ((segs_black, (0.0, 0.0, 0.0, 1.0)),
+                            (segs_white, (1.0, 1.0, 1.0, 1.0)))
+        if segs
+    ]
+
+
+def _draw_batches(shader, batches) -> None:
     gpu.state.blend_set('ALPHA')
-    for segs, color in ((segs_black, (0.0, 0.0, 0.0, 1.0)),
-                        (segs_white, (1.0, 1.0, 1.0, 1.0))):
-        if not segs:
-            continue
-        batch = batch_for_shader(shader, 'LINES', {"pos": segs})
+    for batch, color in batches:
         shader.uniform_float("color", color)
         batch.draw(shader)
     gpu.state.blend_set('NONE')
@@ -128,19 +134,32 @@ def _outline_draw():
         return
     rv3d = region.data
     loc = canvas.location
-    for mode, uv_pts in _outline["polys"]:
-        coords = []
-        for u, v in uv_pts:
-            p2 = view3d_utils.location_3d_to_region_2d(
-                region, rv3d, (loc.x + u, loc.y + v, loc.z))
-            if p2 is None:
-                coords = []
-                break
-            coords.append((p2.x, p2.y, 0.0))
-        if len(coords) < 3:
-            continue
-        coords.append(coords[0])
-        _draw_marching_ants(coords)
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    # 화면 공간 점선이라 뷰 행렬·리전 크기·캔버스 위치·폴리곤이 같으면 그대로 재사용
+    key = (
+        tuple(tuple(row) for row in rv3d.perspective_matrix),
+        region.width, region.height, tuple(loc),
+        tuple((id(pts), len(pts)) for _mode, pts in _outline["polys"]),
+    )
+    cached = _outline["cache2d"].get(region.as_pointer())
+    if cached is None or cached[0] != key:
+        batches = []
+        for _mode, uv_pts in _outline["polys"]:
+            coords = []
+            for u, v in uv_pts:
+                p2 = view3d_utils.location_3d_to_region_2d(
+                    region, rv3d, (loc.x + u, loc.y + v, loc.z))
+                if p2 is None:
+                    coords = []
+                    break
+                coords.append((p2.x, p2.y, 0.0))
+            if len(coords) < 3:
+                continue
+            coords.append(coords[0])
+            batches.extend(_marching_ants_batches(shader, coords))
+        cached = (key, batches)
+        _outline["cache2d"][region.as_pointer()] = cached
+    _draw_batches(shader, cached[1])
 
 
 def _outline_draw_3d():
@@ -157,11 +176,16 @@ def _outline_draw_3d():
     if canvas is not None and _in_canvas_view(space, canvas):
         return  # 2D 캔버스 뷰는 전용 점선이 담당
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    # 월드 좌표 점이라 점 목록이 바뀔 때만 배치를 만든다
+    cached = _outline["cache3d"]
+    if cached is None or cached[0] is not pts:
+        cached = (pts, batch_for_shader(shader, 'POINTS', {"pos": pts}))
+        _outline["cache3d"] = cached
+    batch = cached[1]
     gpu.state.depth_test_set('LESS_EQUAL')
     gpu.state.blend_set('ALPHA')
     for size, color in ((4.0, (0.0, 0.0, 0.0, 1.0)), (2.0, (1.0, 1.0, 1.0, 1.0))):
         gpu.state.point_size_set(size)
-        batch = batch_for_shader(shader, 'POINTS', {"pos": pts})
         shader.uniform_float("color", color)
         batch.draw(shader)
     gpu.state.point_size_set(1.0)
@@ -188,6 +212,8 @@ def _outline_clear() -> None:
             _outline[key] = None
     _outline["polys"].clear()
     _outline["points3d"] = []
+    _outline["cache2d"].clear()
+    _outline["cache3d"] = None
 
 
 def _mask_boundary_world_points(obj, masked: np.ndarray, w: int, h: int,
@@ -654,7 +680,8 @@ class PAINTSYSTEM_OT_LassoSelect(ModalDrawMixin, Operator):
         if event.type in {'LEFTMOUSE'} and event.value == 'RELEASE':
             self._finish_modal_draw(context)
             return self._commit(context)
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
+        # 창 밖에서 버튼을 떼 RELEASE 를 놓치면 모달이 남아 모든 키를 삼키므로 취소한다
+        if event.type in {'RIGHTMOUSE', 'ESC', 'WINDOW_DEACTIVATE'}:
             self._finish_modal_draw(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
@@ -734,7 +761,8 @@ class PAINTSYSTEM_OT_PolyLassoSelect(ModalDrawMixin, Operator):
                 self._points.pop()
                 context.area.tag_redraw()
             return {'RUNNING_MODAL'}
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
+        # 창 밖에서 버튼을 떼 RELEASE 를 놓치면 모달이 남아 모든 키를 삼키므로 취소한다
+        if event.type in {'RIGHTMOUSE', 'ESC', 'WINDOW_DEACTIVATE'}:
             self._finish_modal_draw(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
@@ -955,7 +983,8 @@ class PAINTSYSTEM_OT_ShapeSelect(ModalDrawMixin, Operator):
             self._finish_modal_draw(context)
             return _commit_selection(
                 self, context, context.region, self._polygon(), self._mode)
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
+        # 창 밖에서 버튼을 떼 RELEASE 를 놓치면 모달이 남아 모든 키를 삼키므로 취소한다
+        if event.type in {'RIGHTMOUSE', 'ESC', 'WINDOW_DEACTIVATE'}:
             self._finish_modal_draw(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
