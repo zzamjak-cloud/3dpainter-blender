@@ -19,6 +19,14 @@ from bl_ui.properties_paint_common import (
 _ALLOWED_PICKER_TYPES = {"CIRCLE_HSV", "CIRCLE_HSL", "SQUARE_SV", "SQUARE_HS", "SQUARE_HV"}
 
 
+
+def _template_palette(layout, data, propname):
+    # Blender 5.x 에서 template_palette 의 color 인자가 제거됐다 (4.x 호환 유지)
+    try:
+        layout.template_palette(data, propname, color=True)
+    except TypeError:
+        layout.template_palette(data, propname)
+
 def _repair_color_picker_type():
     try:
         view = bpy.context.preferences.view
@@ -304,12 +312,12 @@ def draw_brush_color_settings(layout: UILayout, context: Context):
                 if not ps_ctx.ps_scene_data.color_history_palette:
                     panel.label(text="No color history yet")
                 else:
-                    panel.template_palette(ps_ctx.ps_scene_data, "color_history_palette", color=True)
+                    _template_palette(panel, ps_ctx.ps_scene_data, "color_history_palette")
             header, panel = box.panel("paintsystem_color_palette", default_closed=True)
             header.label(text="Color Palette")
             panel.template_ID(settings, "palette", new="palette.new")
             if panel and settings.palette:
-                panel.template_palette(settings, "palette", color=True)
+                _template_palette(panel, settings, "palette")
         except Exception:
             pass
         # draw_color_settings(context, col, brush)
@@ -502,6 +510,46 @@ class MAT_PT_TexPaintRMBMenu(PSContextMixin, Panel, UnifiedPaintPanel):
             sub.active = overlay.show_wireframes
             sub.prop(overlay, "wireframe_opacity", text="Wireframe", slider=True)
 
+def draw_palette_quick_picker(layout, context):
+    """Q 팔레트 팝업 내용 — 패널과 토글 팝오버가 공유한다."""
+    ps_ctx = PSContextMixin.parse_context(context)
+    settings = UnifiedPaintPanel.paint_settings(context)
+
+    if not settings:
+        layout.label(text="No paint settings available", icon='ERROR')
+        return
+
+    brush = settings.brush
+
+    # 전경색 피커를 곧바로 노출 — 스와치를 한 번 더 눌러야 하는 뎁스를 없앤다
+    if brush:
+        UnifiedPaintPanel.prop_unified_color_picker(layout, context, brush, "color", value_slider=True)
+        swatch_row = layout.row(align=True)
+        swatch_row.scale_y = 1.1
+        UnifiedPaintPanel.prop_unified_color(swatch_row, context, brush, "color", text="")
+        UnifiedPaintPanel.prop_unified_color(swatch_row, context, brush, "secondary_color", text="")
+        swatch_row.operator("paint.brush_colors_flip", icon='FILE_REFRESH', text="")
+
+    # 활성 팔레트 — 없으면 New 버튼만 노출된다
+    palette_box = layout.box()
+    palette_col = palette_box.column(align=True)
+    palette_col.label(text="Color Palette")
+    palette_col.template_ID(settings, "palette", new="palette.new")
+    if settings.palette:
+        _template_palette(palette_col, settings, "palette")
+
+    # 최근 사용 색 히스토리
+    if ps_ctx.ps_scene_data:
+        history_box = layout.box()
+        history_col = history_box.column(align=True)
+        history_col.label(text="Color History")
+        history = ps_ctx.ps_scene_data.color_history_palette
+        if history:
+            _template_palette(history_col, ps_ctx.ps_scene_data, "color_history_palette")
+        else:
+            history_col.label(text="No color history yet")
+
+
 class MAT_PT_PaletteQuickPicker(PSContextMixin, Panel, UnifiedPaintPanel):
     """Q 단축키로 띄우는 팔레트 피커 팝업 (포토샵의 Swatches 패널 대용)"""
     bl_idname = "MAT_PT_PaletteQuickPicker"
@@ -516,44 +564,7 @@ class MAT_PT_PaletteQuickPicker(PSContextMixin, Panel, UnifiedPaintPanel):
         return context.mode == 'PAINT_TEXTURE'
 
     def draw(self, context):
-        layout = self.layout
-        ps_ctx = self.parse_context(context)
-        settings = self.paint_settings(context)
-
-        if not settings:
-            layout.label(text="No paint settings available", icon='ERROR')
-            return
-
-        brush = settings.brush
-
-        # 전경색 피커를 곧바로 노출 — 스와치를 한 번 더 눌러야 하는 뎁스를 없앤다
-        if brush:
-            self.prop_unified_color_picker(layout, context, brush, "color", value_slider=True)
-            swatch_row = layout.row(align=True)
-            swatch_row.scale_y = 1.1
-            self.prop_unified_color(swatch_row, context, brush, "color", text="")
-            self.prop_unified_color(swatch_row, context, brush, "secondary_color", text="")
-            swatch_row.operator("paint.brush_colors_flip", icon='FILE_REFRESH', text="")
-
-        # 활성 팔레트 — 없으면 New 버튼만 노출된다
-        palette_box = layout.box()
-        palette_col = palette_box.column(align=True)
-        palette_col.label(text="Color Palette")
-        palette_col.template_ID(settings, "palette", new="palette.new")
-        if settings.palette:
-            palette_col.template_palette(settings, "palette", color=True)
-
-        # 최근 사용 색 히스토리
-        if ps_ctx.ps_scene_data:
-            history_box = layout.box()
-            history_col = history_box.column(align=True)
-            history_col.label(text="Color History")
-            history = ps_ctx.ps_scene_data.color_history_palette
-            if history:
-                history_col.template_palette(
-                    ps_ctx.ps_scene_data, "color_history_palette", color=True)
-            else:
-                history_col.label(text="No color history yet")
+        draw_palette_quick_picker(self.layout, context)
 
 
 class NODE_PT_PaintSystemShaderEditor(PSContextMixin, Panel):

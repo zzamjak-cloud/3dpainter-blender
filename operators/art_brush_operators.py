@@ -83,6 +83,62 @@ class PAINTSYSTEM_OT_ClearArtBrush(Operator):
 
 # ----------------------------------------------------------------- 픽커 프로퍼티
 
+def draw_art_brush_grid(layout, context) -> None:
+    """카테고리별 썸네일 그리드 — 이름 버튼을 누르면 현재 브러시에 즉시 적용."""
+    from .brushes.art_brushes import get_active_art_brush
+    active = get_active_art_brush(_active_paint_brush(context))
+    for category, group in CATEGORIES:
+        layout.label(text=category)
+        grid = layout.grid_flow(row_major=True, columns=6, even_columns=True, align=True)
+        for brush_id, label, *_rest in group:
+            cell = grid.column(align=True)
+            cell.template_icon(icon_value=get_art_icon(brush_id), scale=3.0)
+            # depress(선택 표시)는 쓰지 않는다 — 팝오버가 선택 버튼을 마우스 아래로 끌어와
+            # 적용된 브러시에 따라 팝업 위치가 바뀐다. 현재 브러시는 체크 아이콘으로 표시
+            op = cell.operator("paint_system.apply_art_brush", text=label,
+                               icon='CHECKMARK' if brush_id == active else 'NONE')
+            op.brush_id = brush_id
+    row = layout.row()
+    row.operator("paint_system.clear_art_brush", text="Clear", icon='X')
+
+
+class PAINTSYSTEM_OT_ArtBrushPicker(Operator):
+    """아트 브러시 썸네일 그리드를 연다 (뷰포트 버튼) — 클릭하면 열려 있고, 고르면 닫힌다"""
+    bl_idname = "paint_system.art_brush_picker"
+    bl_label = "Art Brushes"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return _active_paint_brush(context) is not None
+
+    @staticmethod
+    def _open(context):
+        context.window_manager.popover(
+            lambda popup, ctx: draw_art_brush_grid(popup.layout, ctx), ui_units_x=26)
+
+    def invoke(self, context, event):
+        # 기즈모는 PRESS 에 실행된다 — 바로 열면 뒤따르는 RELEASE 가 마우스 아래 버튼을
+        # 눌러 버려 '누른 채 끌어서 고르는' 메뉴처럼 동작하므로, 버튼을 뗀 뒤에 연다
+        if event.value == 'PRESS' and event.type in {'LEFTMOUSE', 'RIGHTMOUSE'}:
+            self._button = event.type
+            context.window_manager.modal_handler_add(self)
+            return {'RUNNING_MODAL'}
+        self._open(context)
+        return {'FINISHED'}
+
+    def modal(self, context, event):
+        if event.type == self._button and event.value == 'RELEASE':
+            self._open(context)
+            return {'FINISHED'}
+        if event.type in {'ESC', 'WINDOW_DEACTIVATE'}:
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        return {'CANCELLED'}
+
+
 # Blender 는 EnumProperty items 콜백이 돌려준 문자열을 참조로만 들고 있어,
 # 모듈 전역에 붙잡아 두지 않으면 라벨이 깨진다.
 _enum_items_cache = []

@@ -23,6 +23,8 @@ submodules = [
     "projection_operators",
     "merge_operators",
     "art_brush_operators",
+    "painting_ux_operators",
+    "parts_operators",
 ]
 
 register, unregister = register_submodule_factory(__name__, submodules)

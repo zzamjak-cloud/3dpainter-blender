@@ -170,24 +170,18 @@ def register() -> None:
                     **_mods,
                 )
 
-        # 3DPainter 포크: 숫자키 = 브러시 강도 (1=10% … 9=90%, 0=100%)
-        _digit_keys = (
-            ('ONE', 'NUMPAD_1', 0.1), ('TWO', 'NUMPAD_2', 0.2),
-            ('THREE', 'NUMPAD_3', 0.3), ('FOUR', 'NUMPAD_4', 0.4),
-            ('FIVE', 'NUMPAD_5', 0.5), ('SIX', 'NUMPAD_6', 0.6),
-            ('SEVEN', 'NUMPAD_7', 0.7), ('EIGHT', 'NUMPAD_8', 0.8),
-            ('NINE', 'NUMPAD_9', 0.9), ('ZERO', 'NUMPAD_0', 1.0),
-        )
-        for _key, _numpad, _val in _digit_keys:
-            for _k in (_key, _numpad):
-                _add_keymap_entry(
-                    kc,
-                    name=km_name,
-                    space_type=space,
-                    idname='paint_system.set_brush_strength',
-                    key=_k,
-                    properties={'value': _val},
-                )
+        # 3DPainter 포크: 숫자키 1~9 = 파츠 Isolate (같은 번호 다시 = 전체), 0 = 전체 표시
+        # 넘패드는 블렌더 뷰 전환 키로 남겨 둔다
+        _digit_keys = ('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE',
+                       'SIX', 'SEVEN', 'EIGHT', 'NINE')
+        for _i, _key in enumerate(_digit_keys):
+            _add_keymap_entry(
+                kc, name=km_name, space_type=space,
+                idname='paint_system.isolate_part', key=_key,
+                properties={'index': _i})
+        _add_keymap_entry(
+            kc, name=km_name, space_type=space,
+            idname='paint_system.show_all_parts', key='ZERO')
 
         # 3DPainter 포크: 레이어 단축키 — Ctrl/Cmd+E 병합, Ctrl/Cmd+Alt+Shift+N 새 레이어
         for _mods in (dict(ctrl=True), dict(oskey=True)):
@@ -232,17 +226,23 @@ def register() -> None:
             kc, name=km_name, space_type=space,
             idname='paint_system.toggle_pressure_size', key='P', shift=True)
 
-        # 3DPainter 포크: Q = 팔레트 피커 팝업 (포토샵 Swatches 패널 대용)
+        # 3DPainter 포크: Q = 팔레트 피커 팝업 토글 (포토샵 Swatches 패널 대용)
         # 블렌더 기본 Q는 Screen 키맵의 Quick Favorites 이지만, 애드온 Image
         # Paint 키맵이 우선하므로 텍스처 페인트 중에는 팔레트가 먼저 뜬다.
         _add_keymap_entry(
-            kc,
-            name=km_name,
-            space_type=space,
-            idname='wm.call_panel',
-            key='Q',
-            properties={'name': 'MAT_PT_PaletteQuickPicker', 'keep_open': True},
-        )
+            kc, name=km_name, space_type=space,
+            idname='paint_system.toggle_palette_popup', key='Q')
+        # 팝오버에 넘기는 전용 키맵 — 열린 팝오버에서 Q 를 다시 누르면 닫힌다
+        from .operators.painting_ux_operators import PALETTE_POPOVER_KEYMAP
+        _add_keymap_entry(
+            kc, name=PALETTE_POPOVER_KEYMAP, space_type='EMPTY',
+            idname='paint_system.toggle_palette_popup', key='Q')
+
+        # 3DPainter 포크: F 누른 채 상하 드래그 = 브러시 크기, 떼면 확정
+        # (블렌더 기본 F 반경 조절을 대체 — Shift+F 강도·Ctrl+F 회전은 그대로)
+        _add_keymap_entry(
+            kc, name=km_name, space_type=space,
+            idname='paint_system.drag_brush_size', key='F')
 
         # Color Sampler ('I') and Toggle Erase Alpha ('E')
         _add_keymap_entry(
