@@ -205,9 +205,21 @@ class PAINTSYSTEM_OT_AddPartFromSelection(_PartsPoll, Operator):
     """선택한 면으로 파츠를 만든다 (편집 모드 선택 또는 면 선택 마스킹 선택)"""
     bl_idname = "paint_system.add_part_from_selection"
     bl_label = "Add Part from Selection"
-    bl_options = {'REGISTER', 'UNDO'}
+    # REGISTER 를 빼 좌측 하단 Redo 패널을 띄우지 않는다 — 거기서 이름을 고치면
+    # 연산자가 다시 실행되며 파츠가 하나 더 생겼다. 이름은 생성 전 대화상자에서 받는다.
+    bl_options = {'UNDO'}
 
     name: StringProperty(name="Name", default="")
+
+    def invoke(self, context, event):
+        # 기본 이름을 채운 입력 창을 먼저 띄우고, 확인(Enter)하면 한 번만 생성한다
+        self.name = f"Part {len(get_parts(context).parts) + 1}"
+        return context.window_manager.invoke_props_dialog(
+            self, title="New Part", confirm_text="Create")
+
+    def draw(self, context):
+        self.layout.activate_init = True  # 창이 뜨면 바로 이름을 입력할 수 있게
+        self.layout.prop(self, "name")
 
     def execute(self, context):
         obj = context.view_layer.objects.active
