@@ -67,11 +67,17 @@ class PAINTSYSTEM_OT_DragBrushSize(Operator):
         owner = _size_owner(context)
         self._owner = owner
         self._start_size = int(owner.size)
-        self._start_unprojected = getattr(owner, "unprojected_radius", None)
+        # 월드 단위 크기 — Blender 5.x 는 unprojected_size(지름), 이전 버전은 unprojected_radius
+        self._unprojected_attr = next(
+            (a for a in ("unprojected_size", "unprojected_radius") if hasattr(owner, a)), None)
+        self._start_unprojected = (
+            getattr(owner, self._unprojected_attr) if self._unprojected_attr else None)
         self._start_y = event.mouse_y
         # 이 키를 떼면 확정한다 (키맵에서 바꿔도 동작하도록 트리거 키를 기억)
         self._trigger = event.type
         self._center = (event.mouse_region_x, event.mouse_region_y)
+        # 떼었을 때 블렌더 커서가 시작점(원이 그려진 자리)에 다시 나타나도록 창 좌표를 기억
+        self._start_window_xy = (event.mouse_x, event.mouse_y)
         self._region_ptr = context.region.as_pointer()
         # 드래그 중엔 블렌더 브러시 커서가 마우스를 따라가므로 끄고 시작점에 원을 고정해 그린다
         paint = context.tool_settings.image_paint
@@ -92,7 +98,8 @@ class PAINTSYSTEM_OT_DragBrushSize(Operator):
         # 크기를 월드 단위로 고정한 브러시는 비율대로 함께 조정한다
         if (self._start_unprojected is not None
                 and getattr(owner, "use_locked_size", 'VIEW') == 'SCENE'):
-            owner.unprojected_radius = self._start_unprojected * size / max(self._start_size, 1)
+            setattr(owner, self._unprojected_attr,
+                    self._start_unprojected * size / max(self._start_size, 1))
 
     def _finish(self, context) -> None:
         if self._handle is not None:
@@ -100,13 +107,17 @@ class PAINTSYSTEM_OT_DragBrushSize(Operator):
             self._handle = None
         context.tool_settings.image_paint.show_brush = self._show_brush
         context.window.cursor_modal_restore()
+        # 마우스를 시작점으로 되돌린다 — 안 그러면 원이 있던 자리와 다른 곳에 커서가 나타나 튀어 보인다
+        context.window.cursor_warp(*self._start_window_xy)
         context.area.tag_redraw()
 
     def modal(self, context, event):
         if event.type == 'MOUSEMOVE':
             dy = event.mouse_y - self._start_y
             scale = 0.25 if event.shift else 1.0
-            self._apply(self._start_size + dy * scale)
+            # size 는 지름이다 — 반지름(원 테두리)이 마우스 이동량과 1:1 로 움직이도록 2배로 반영
+            ui = context.preferences.system.pixel_size
+            self._apply(round(self._start_size + 2.0 * dy * scale / ui))
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type == self._trigger:
@@ -119,8 +130,8 @@ class PAINTSYSTEM_OT_DragBrushSize(Operator):
             return {'FINISHED'}
         if event.type == 'ESC' or (event.type == 'RIGHTMOUSE' and event.value == 'PRESS'):
             self._apply(self._start_size)
-            if self._start_unprojected is not None and hasattr(self._owner, "unprojected_radius"):
-                self._owner.unprojected_radius = self._start_unprojected
+            if self._start_unprojected is not None:
+                setattr(self._owner, self._unprojected_attr, self._start_unprojected)
             self._finish(context)
             return {'CANCELLED'}
         # 다른 앱으로 전환하면 키 RELEASE 를 못 받으므로 현재 크기로 확정하고 끝낸다
@@ -133,8 +144,8 @@ class PAINTSYSTEM_OT_DragBrushSize(Operator):
         region = bpy.context.region
         if region is None or region.as_pointer() != self._region_ptr:
             return
-        # 블렌더 브러시 커서와 같은 기준 — 반지름 px 에 UI 배율을 곱한다
-        radius = float(self._owner.size) * bpy.context.preferences.system.pixel_size
+        # 블렌더 브러시 커서와 같은 기준 — size 는 지름(px)이므로 절반을 반지름으로, UI 배율을 곱한다
+        radius = float(self._owner.size) * 0.5 * bpy.context.preferences.system.pixel_size
         cx, cy = self._center
         segments = max(32, min(256, int(radius * 0.5)))
         coords = [
